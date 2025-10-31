@@ -70,7 +70,7 @@ class LLMManager:
             model_name: Nom ou chemin du modèle Hugging Face
             gpu_id: ID du GPU (0 ou 1) sur lequel charger le modèle
             **model_kwargs: Arguments additionnels pour le chargement du modèle
-                (ex: torch_dtype, device_map, etc.)
+                (ex: dtype, device_map, attn_implementation, etc.)
         
         Returns:
             (success: bool, access_token: Optional[str]) - True et le token si succès, False et None sinon
@@ -102,7 +102,7 @@ class LLMManager:
             
             # Arguments par défaut pour le chargement
             load_kwargs = {
-                "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+                "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
                 **model_kwargs
             }
             
@@ -112,6 +112,14 @@ class LLMManager:
                 # Charger sur CPU d'abord (plus compatible)
                 load_kwargs["device_map"] = None
                 load_kwargs["low_cpu_mem_usage"] = True
+            
+            # Désactiver SDPA attention pour ROCm multi-GPU (évite les problèmes de performance)
+            # Utiliser "eager" pour forcer le backend attention standard
+            if "attn_implementation" not in model_kwargs and torch.cuda.is_available():
+                # Vérifier si on est sur ROCm (HIP)
+                if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                    load_kwargs["attn_implementation"] = "eager"
+                    logger.info("SDPA attention désactivée pour ROCm (utilisation du backend 'eager')")
             
             # Chargement du modèle
             model = AutoModelForCausalLM.from_pretrained(
