@@ -154,7 +154,17 @@ class LLMManager:
             return True, access_token
             
         except Exception as e:
-            logger.error(f"Erreur lors du chargement du modèle '{model_name}': {str(e)}", exc_info=True)
+            error_msg = str(e)
+            logger.error(f"Erreur lors du chargement du modèle '{model_name}': {error_msg}", exc_info=True)
+            
+            # Détection d'erreurs communes avec messages plus clairs
+            if "GGUF" in error_msg or ".gguf" in error_msg.lower():
+                logger.error("Modèle GGUF détecté - incompatible avec transformers. Utilisez llama.cpp ou un autre loader.")
+            elif "No such file" in error_msg or "not found" in error_msg.lower():
+                logger.error("Fichiers de modèle introuvables - vérifiez que le modèle est bien téléchargé.")
+            elif "out of memory" in error_msg.lower() or "CUDA out of memory" in error_msg:
+                logger.error("Mémoire GPU insuffisante - essayez un modèle plus petit ou libérez de l'espace.")
+            
             # Nettoyage en cas d'erreur
             self.models[gpu_id] = None
             self.tokenizers[gpu_id] = None

@@ -118,6 +118,17 @@ def load_model(model_name: str):
             request_data = {}
         model_kwargs = request_data.get('model_kwargs', {})
 
+        # Vérifier si c'est un modèle GGUF (incompatible avec transformers)
+        model_name_lower = model_name.lower()
+        if '.gguf' in model_name_lower or 'gguf' in model_name_lower:
+            return jsonify({
+                'status': 'error',
+                'message': f'Le modèle "{model_name}" est au format GGUF, incompatible avec cette API.',
+                'details': 'Les modèles GGUF nécessitent llama.cpp ou d\'autres loaders spécialisés. Cette API utilise transformers (PyTorch) qui nécessite des modèles aux formats .bin, .safetensors, ou .pt.',
+                'compatible_formats': ['.bin', '.safetensors', '.pt', '.pth'],
+                'suggestion': f'Utilisez l\'identifier du modèle depuis GET /models/. Les modèles compatibles ont "model.safetensors" ou "model.bin" dans leurs fichiers. Par exemple: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" ou "gpt2"'
+            }), 400
+
         logger.info(f"Chargement du modèle '{model_name}' sur GPU {gpu_id}...")
         success, access_token = manager.load_model(model_name, gpu_id=gpu_id, **model_kwargs)
 
@@ -136,9 +147,17 @@ def load_model(model_name: str):
                 'gpu_status': gpu_status
             }), 200
         else:
+            # Améliorer le message d'erreur avec plus de détails
             return jsonify({
                 'status': 'error',
-                'message': f'Erreur lors du chargement du modèle "{model_name}" sur GPU {gpu_id}'
+                'message': f'Erreur lors du chargement du modèle "{model_name}" sur GPU {gpu_id}',
+                'details': 'Vérifiez les logs du serveur pour plus d\'informations.',
+                'tips': [
+                    'Utilisez l\'identifier exact du modèle depuis GET /models/',
+                    'Assurez-vous que le modèle est compatible avec transformers (format .bin, .safetensors, pas .gguf)',
+                    'Vérifiez que vous avez suffisamment de mémoire GPU disponible',
+                    'Pour les modèles Llama, assurez-vous d\'avoir les bons tokens spéciaux configurés'
+                ]
             }), 500
 
     except Exception as e:
