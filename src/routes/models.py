@@ -59,12 +59,28 @@ def _scan_huggingface_models():
                         except (ValueError, TypeError):
                             size_bytes = 0
                 
+                # Extraire les noms de fichiers de manière robuste
+                file_names = []
+                if hasattr(latest_revision, 'files') and latest_revision.files:
+                    for f in list(latest_revision.files):
+                        # CachedFileInfo peut avoir différents attributs selon la version
+                        if hasattr(f, 'file_path'):
+                            file_names.append(os.path.basename(f.file_path))
+                        elif hasattr(f, 'blob_path'):
+                            file_names.append(os.path.basename(f.blob_path))
+                        elif hasattr(f, 'filename'):
+                            file_names.append(f.filename)
+                        elif hasattr(f, 'file_name'):
+                            file_names.append(f.file_name)
+                        elif hasattr(f, 'path'):
+                            file_names.append(os.path.basename(f.path))
+                
                 model_info = {
                     "identifier": repo.repo_id,
                     "size_mb": round(size_bytes / (1024 * 1024), 2) if size_bytes > 0 else 0,
                     "revision": latest_revision.commit_hash if hasattr(latest_revision, 'commit_hash') else None,
                     "path": latest_revision.snapshot_path if hasattr(latest_revision, 'snapshot_path') else None,
-                    "files": [f.filename for f in list(latest_revision.files)] if hasattr(latest_revision, 'files') and latest_revision.files else [],
+                    "files": file_names,
                 }
                 
                 # Chercher config.json pour plus d'infos
