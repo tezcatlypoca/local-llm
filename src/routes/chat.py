@@ -96,13 +96,16 @@ def chat(gpu_id: int):
                 'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
             }), 400
         
-        # Récupérer les données du body JSON
-        request_data = request.get_json()
+        # Récupérer les données du body JSON (force=True permet d'accepter même sans Content-Type)
+        try:
+            request_data = request.get_json(force=True, silent=True)
+        except Exception:
+            request_data = None
         
         if request_data is None:
             return jsonify({
                 'status': 'error',
-                'message': 'Le body de la requête doit être au format JSON.'
+                'message': 'Le body de la requête doit être au format JSON. Assurez-vous d\'envoyer du JSON et de définir le header Content-Type: application/json dans Postman.'
             }), 400
         
         # Extraire et valider les messages (format conversationnel)
@@ -241,13 +244,16 @@ def completion(gpu_id: int):
                 'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
             }), 400
         
-        # Récupérer les données du body JSON
-        request_data = request.get_json()
+        # Récupérer les données du body JSON (force=True permet d'accepter même sans Content-Type)
+        try:
+            request_data = request.get_json(force=True, silent=True)
+        except Exception:
+            request_data = None
         
         if request_data is None:
             return jsonify({
                 'status': 'error',
-                'message': 'Le body de la requête doit être au format JSON.'
+                'message': 'Le body de la requête doit être au format JSON. Assurez-vous d\'envoyer du JSON et de définir le header Content-Type: application/json dans Postman.'
             }), 400
         
         # Extraire et valider le prompt (format string simple)

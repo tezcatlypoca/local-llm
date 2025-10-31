@@ -110,7 +110,11 @@ def load_model(model_name: str):
                 'loaded_models': loaded_models
             }), 503
 
-        request_data = request.get_json() or {}
+        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
         model_kwargs = request_data.get('model_kwargs', {})
 
         logger.info(f"Chargement du modèle '{model_name}' sur GPU {gpu_id}...")
@@ -156,7 +160,11 @@ def unload_model(gpu_id: int):
                 'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
             }), 400
 
-        request_data = request.get_json() or {}
+        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
         access_token = request_data.get('access_token')
 
         if not access_token:
