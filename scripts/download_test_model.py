@@ -1,3 +1,4 @@
+4
 #!/usr/bin/env python3
 """
 Script pour télécharger un petit modèle LLM pour tester l'API.
@@ -52,11 +53,24 @@ def download_model(model_name: str = "gpt2"):
         return True
         
     except Exception as e:
-        print(f"\n❌ Erreur lors du téléchargement: {e}")
-        print("\n💡 Vérifiez:")
+        error_msg = str(e)
+        print(f"\n❌ Erreur lors du téléchargement: {error_msg}")
+        
+        # Détecter les erreurs courantes et donner des suggestions
+        if "is not a valid model identifier" in error_msg or "not a local folder" in error_msg:
+            print("\n⚠️  Le nom du modèle semble incorrect.")
+            print("   Vérifiez le nom exact sur: https://huggingface.co/models")
+            print("   Exemples valides:")
+            print("   - Qwen/Qwen2.5-1.5B-Instruct")
+            print("   - Qwen/Qwen2.5-3B-Instruct")
+            print("   - Qwen/Qwen2-1.5B-Instruct")
+        
+        print("\n💡 Vérifiez également:")
         print("   - Votre connexion internet")
         print("   - Que transformers est correctement installé")
         print("   - Que vous avez suffisamment d'espace disque")
+        print("   - Si c'est un modèle privé, connectez-vous avec: huggingface-cli login")
+        
         return False
 
 
@@ -72,8 +86,9 @@ def main():
         "1": ("gpt2", "GPT2 - ~500 MB - Très rapide, bon pour les tests"),
         "2": ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "TinyLlama Chat - ~2.2 GB - Modèle conversationnel"),
         "3": ("Qwen/Qwen2-1.5B-Instruct", "Qwen2 1.5B - ~3 GB - Modèle instruct/chat multilingue"),
-        "4": ("Qwen/Qwen2-2.5B-Instruct", "Qwen2 2.5B - ~5 GB - ⭐ RECOMMANDÉ - Meilleur compromis qualité/taille (8GB)"),
-        "5": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)"),
+        "4": ("Qwen/Qwen2.5-1.5B-Instruct", "Qwen2.5 1.5B - ~3 GB - ⭐ RECOMMANDÉ - Meilleur compromis qualité/taille (8GB)"),
+        "5": ("Qwen/Qwen2.5-3B-Instruct", "Qwen2.5 3B - ~6 GB - Plus performant (limite 8GB)"),
+        "6": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)"),
     }
     
     print("Modèles disponibles pour téléchargement:")
@@ -82,16 +97,16 @@ def main():
         print(f"  {key}. {description}")
     print()
     
-    choice = input("Choisissez un modèle (1-5) ou entrez un nom de modèle Hugging Face: ").strip()
+    choice = input("Choisissez un modèle (1-6) ou entrez un nom de modèle Hugging Face: ").strip()
     
     if choice in models:
         model_name = models[choice][0]
     elif choice:
         model_name = choice
     else:
-        # Par défaut : Qwen2-2.5B-Instruct (recommandé pour 8GB)
-        print("Utilisation du modèle par défaut recommandé: Qwen/Qwen2-2.5B-Instruct")
-        model_name = "Qwen/Qwen2-2.5B-Instruct"
+        # Par défaut : Qwen2.5-1.5B-Instruct (recommandé pour 8GB)
+        print("Utilisation du modèle par défaut recommandé: Qwen/Qwen2.5-1.5B-Instruct")
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
     
     print()
     success = download_model(model_name)
