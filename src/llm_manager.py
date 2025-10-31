@@ -269,8 +269,41 @@ class LLMManager:
         device = self.devices[gpu_id]
         
         try:
-            # Tokenisation du prompt
-            inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+            # Pour les modèles de chat, essayer d'utiliser apply_chat_template si disponible
+            # Cela formate correctement les prompts pour les modèles conversationnels
+            if hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
+                try:
+                    # Si le prompt contient plusieurs lignes (messages séparés), essayer de les parser
+                    # Sinon, traiter comme un seul message utilisateur
+                    prompt_lines = [line.strip() for line in prompt.split('\n') if line.strip()]
+                    if len(prompt_lines) > 1:
+                        # Plusieurs messages - essayer de les formater en format chat
+                        messages = []
+                        for line in prompt_lines:
+                            messages.append({"role": "user", "content": line})
+                        formatted_prompt = tokenizer.apply_chat_template(
+                            messages, 
+                            tokenize=False, 
+                            add_generation_prompt=True
+                        )
+                    else:
+                        # Un seul message
+                        messages = [{"role": "user", "content": prompt.strip()}]
+                        formatted_prompt = tokenizer.apply_chat_template(
+                            messages, 
+                            tokenize=False, 
+                            add_generation_prompt=True
+                        )
+                    logger.debug(f"Prompt formaté avec apply_chat_template: {formatted_prompt[:200]}...")
+                    inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=True, truncation=True)
+                except Exception as e:
+                    logger.debug(f"Erreur avec apply_chat_template, utilisation du prompt brut: {e}")
+                    # Fallback : utiliser le prompt tel quel
+                    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+            else:
+                # Tokenisation standard pour les modèles non-chat
+                inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+            
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
             # Génération
@@ -306,7 +339,22 @@ class LLMManager:
                 if generated_text.startswith(prompt):
                     generated_text = generated_text[len(prompt):].strip()
             
-            return generated_text
+            # Nettoyer la réponse : retirer les tokens spéciaux de fin de conversation pour les modèles de chat
+            # (ex: </s>, <|endoftext|>, etc.)
+            generated_text = generated_text.strip()
+            
+            # Retirer les préfixes/suffixes communs des modèles de chat qui peuvent rester
+            chat_end_patterns = [
+                '</s>', '<|endoftext|>', '<|end|>', '<|im_end|>',
+                '\nUser:', '\nAssistant:', '\nSystem:'
+            ]
+            for pattern in chat_end_patterns:
+                if generated_text.endswith(pattern):
+                    generated_text = generated_text[:-len(pattern)].strip()
+                if generated_text.startswith(pattern):
+                    generated_text = generated_text[len(pattern):].strip()
+            
+            return generated_text.strip()
             
         except Exception as e:
             logger.error(f"Erreur lors de la génération: {str(e)}", exc_info=True)

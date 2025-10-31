@@ -123,8 +123,10 @@ def chat(gpu_id: int):
             }), 400
         
         # Extraire les paramètres optionnels avec valeurs par défaut
-        temperature = request_data.get('temperature', 0.7)
-        max_new_tokens = request_data.get('max_new_tokens', 512)
+        # Valeurs par défaut optimisées : température plus basse pour des réponses plus précises,
+        # max_new_tokens réduit pour éviter les réponses trop longues/hors sujet
+        temperature = request_data.get('temperature', 0.3)
+        max_new_tokens = request_data.get('max_new_tokens', 150)
         
         # Valider les types des paramètres optionnels
         if not isinstance(temperature, (int, float)):
@@ -283,8 +285,10 @@ def completion(gpu_id: int):
             }), 400
         
         # Extraire les paramètres optionnels avec valeurs par défaut
-        temperature = request_data.get('temperature', 0.7)
-        max_new_tokens = request_data.get('max_new_tokens', 512)
+        # Valeurs par défaut optimisées : température plus basse pour des réponses plus précises,
+        # max_new_tokens réduit pour éviter les réponses trop longues/hors sujet
+        temperature = request_data.get('temperature', 0.3)
+        max_new_tokens = request_data.get('max_new_tokens', 150)
         
         # Valider les types des paramètres optionnels
         if not isinstance(temperature, (int, float)):
