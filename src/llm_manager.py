@@ -270,6 +270,9 @@ class LLMManager:
                     "temperature": temperature,
                     "top_p": top_p,
                     "do_sample": do_sample,
+                    "repetition_penalty": 1.1,  # Pénalité contre les répétitions (1.0 = pas de pénalité, >1.0 = pénalise les répétitions)
+                    "pad_token_id": tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+                    "eos_token_id": tokenizer.eos_token_id,
                     **generation_kwargs
                 }
                 

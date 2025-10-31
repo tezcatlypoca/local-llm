@@ -54,7 +54,7 @@ def _validate_chat_messages(messages):
         if not isinstance(content, str) or not content.strip():
             return False, f"Le contenu du message à l'index {idx} ne peut pas être vide.", None
         
-        # Formater selon le rôle
+        # Formater selon le rôle (format plus naturel pour GPT-2)
         if role == "system":
             prompt_parts.append(f"System: {content.strip()}")
         elif role == "user":
@@ -62,8 +62,12 @@ def _validate_chat_messages(messages):
         elif role == "assistant":
             prompt_parts.append(f"Assistant: {content.strip()}")
     
-    # Créer le prompt final
+    # Créer le prompt final avec un format plus adapté à GPT-2
+    # Pour GPT-2, on termine par "Assistant:" pour indiquer qu'on attend une réponse
     formatted_prompt = "\n".join(prompt_parts)
+    if not formatted_prompt.strip().endswith("Assistant:"):
+        formatted_prompt += "\nAssistant:"
+    
     return True, None, formatted_prompt
 
 
@@ -186,7 +190,8 @@ def chat(gpu_id: int):
             temperature=temperature,
             max_new_tokens=max_new_tokens,
             do_sample=True,
-            top_p=0.9
+            top_p=0.9,
+            repetition_penalty=1.2  # Pénalité contre les répétitions (augmentée pour chat)
         )
         
         if response is None:
