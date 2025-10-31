@@ -70,8 +70,9 @@ def main():
     # Liste de modèles recommandés (du plus petit au plus grand)
     models = {
         "1": ("gpt2", "GPT2 - ~500 MB - Très rapide, bon pour les tests"),
-        "2": ("tinyllama/TinyLlama-1.1B-Chat-v1.0", "TinyLlama - ~2 GB - Modèle conversationnel"),
-        "3": ("microsoft/phi-2", "Phi-2 - ~5 GB - Modèle Microsoft performant"),
+        "2": ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "TinyLlama Chat - ~2.2 GB - Modèle conversationnel recommandé"),
+        "3": ("Qwen/Qwen2-1.5B-Instruct", "Qwen2 1.5B - ~3 GB - Modèle instruct/chat multilingue"),
+        "4": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)"),
     }
     
     print("Modèles disponibles pour téléchargement:")
@@ -80,7 +81,7 @@ def main():
         print(f"  {key}. {description}")
     print()
     
-    choice = input("Choisissez un modèle (1-3) ou entrez un nom de modèle Hugging Face: ").strip()
+    choice = input("Choisissez un modèle (1-4) ou entrez un nom de modèle Hugging Face: ").strip()
     
     if choice in models:
         model_name = models[choice][0]
