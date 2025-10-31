@@ -103,19 +103,24 @@ class LLMManager:
             # Arguments par défaut pour le chargement
             load_kwargs = {
                 "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
-                "device_map": "auto",  # Hugging Face gère automatiquement le placement
                 **model_kwargs
             }
             
-            # Si device_map est explicitement fourni, on l'utilise
+            # Si device_map n'est pas explicitement fourni, on charge d'abord sur CPU puis on déplace
+            # Cela évite les problèmes avec device_map sur certaines versions/configurations
             if "device_map" not in model_kwargs:
-                # Force le chargement sur le GPU spécifié
-                load_kwargs["device_map"] = {"": device}
+                # Charger sur CPU d'abord (plus compatible)
+                load_kwargs["device_map"] = None
+                load_kwargs["low_cpu_mem_usage"] = True
             
+            # Chargement du modèle
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 **load_kwargs
             )
+            
+            # Déplacer le modèle sur le GPU spécifié manuellement
+            model = model.to(device)
             model.eval()
             
             # Stockage

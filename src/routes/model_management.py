@@ -70,10 +70,11 @@ def _check_model_exists(model_name: str) -> tuple[bool, str]:
 
 
 def _find_free_gpu(manager) -> int:
-    """Trouve un GPU libre pour charger un modèle."""
+    """Trouve un GPU libre pour charger un modèle. Préfère GPU 1 (évite le GPU d'affichage)."""
     status = manager.get_model_status()
 
-    for gpu_id in [0, 1]:
+    # Chercher d'abord GPU 1, puis GPU 0 (priorité au GPU 1 pour éviter le GPU d'affichage)
+    for gpu_id in [1, 0]:
         gpu_info = status["gpus"].get(gpu_id, {})
         if gpu_info.get("gpu_available", False) and not gpu_info.get("model_loaded", False):
             return gpu_id
