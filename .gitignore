@@ -1,2 +1,5 @@
 *.ini
 /venv/
+.cursor/
+doc/
+__pycache__/
