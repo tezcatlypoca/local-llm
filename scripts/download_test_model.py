@@ -70,9 +70,10 @@ def main():
     # Liste de modèles recommandés (du plus petit au plus grand)
     models = {
         "1": ("gpt2", "GPT2 - ~500 MB - Très rapide, bon pour les tests"),
-        "2": ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "TinyLlama Chat - ~2.2 GB - Modèle conversationnel recommandé"),
+        "2": ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "TinyLlama Chat - ~2.2 GB - Modèle conversationnel"),
         "3": ("Qwen/Qwen2-1.5B-Instruct", "Qwen2 1.5B - ~3 GB - Modèle instruct/chat multilingue"),
-        "4": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)"),
+        "4": ("Qwen/Qwen2-2.5B-Instruct", "Qwen2 2.5B - ~5 GB - ⭐ RECOMMANDÉ - Meilleur compromis qualité/taille (8GB)"),
+        "5": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)"),
     }
     
     print("Modèles disponibles pour téléchargement:")
@@ -81,15 +82,16 @@ def main():
         print(f"  {key}. {description}")
     print()
     
-    choice = input("Choisissez un modèle (1-4) ou entrez un nom de modèle Hugging Face: ").strip()
+    choice = input("Choisissez un modèle (1-5) ou entrez un nom de modèle Hugging Face: ").strip()
     
     if choice in models:
         model_name = models[choice][0]
     elif choice:
         model_name = choice
     else:
-        print("Utilisation du modèle par défaut: gpt2")
-        model_name = "gpt2"
+        # Par défaut : Qwen2-2.5B-Instruct (recommandé pour 8GB)
+        print("Utilisation du modèle par défaut recommandé: Qwen/Qwen2-2.5B-Instruct")
+        model_name = "Qwen/Qwen2-2.5B-Instruct"
     
     print()
     success = download_model(model_name)
