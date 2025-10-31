@@ -38,11 +38,13 @@ def _scan_huggingface_models():
             cache_info = scan_cache_dir()
             # cache_info.repos est un frozenset, on le convertit en liste
             for repo in list(cache_info.repos):
-                if not repo.revisions:
+                # repo.revisions peut être un frozenset, on le convertit en liste
+                revisions_list = list(repo.revisions) if repo.revisions else []
+                if not revisions_list:
                     continue
                 
                 # Prendre la dernière révision
-                latest_revision = repo.revisions[-1]
+                latest_revision = revisions_list[-1]
                 
                 # Calculer la taille (size_on_disk peut être un int en bytes ou un str)
                 size_bytes = 0
@@ -62,7 +64,7 @@ def _scan_huggingface_models():
                     "size_mb": round(size_bytes / (1024 * 1024), 2) if size_bytes > 0 else 0,
                     "revision": latest_revision.commit_hash if hasattr(latest_revision, 'commit_hash') else None,
                     "path": latest_revision.snapshot_path if hasattr(latest_revision, 'snapshot_path') else None,
-                    "files": [f.filename for f in latest_revision.files] if hasattr(latest_revision, 'files') else [],
+                    "files": [f.filename for f in list(latest_revision.files)] if hasattr(latest_revision, 'files') and latest_revision.files else [],
                 }
                 
                 # Chercher config.json pour plus d'infos
