@@ -21,10 +21,15 @@ chat_bp = Blueprint('chat', __name__)
 
 def _validate_chat_messages(messages):
     """
-    Valide le format des messages conversationnels pour /chat.
+    Valide et prépare les messages pour /chat.
+    API pure : on accepte les messages tels quels sans ajouter de formatage ou contexte.
     
-    Format attendu:
-    - list : Liste de messages au format [{"role": "user/assistant/system", "content": "..."}]
+    Formats acceptés:
+    - list de strings : ["message1", "message2", ...]
+    - list de dicts avec 'content' : [{"content": "..."}, ...]
+    - list de dicts avec 'role' et 'content' : [{"role": "...", "content": "..."}]
+    
+    L'API ne fait que concaténer les messages, le formatage/contextualisation est géré par l'app client.
     
     Returns:
         (is_valid: bool, error_message: str, formatted_prompt: str)
@@ -32,41 +37,34 @@ def _validate_chat_messages(messages):
     if messages is None:
         return False, "Le champ 'messages' est requis pour /chat.", None
     
-    # Format list (conversationnel) requis
+    # Format list requis
     if not isinstance(messages, list):
-        return False, "Le champ 'messages' doit être une liste de messages conversationnels [{'role': '...', 'content': '...'}].", None
+        return False, "Le champ 'messages' doit être une liste.", None
     
     if len(messages) == 0:
         return False, "La liste de messages ne peut pas être vide.", None
     
-    # Valider et formater chaque message
+    # Extraire le contenu de chaque message (format flexible)
     prompt_parts = []
     for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            return False, f"Le message à l'index {idx} doit être un dictionnaire avec 'role' et 'content'.", None
-        
-        role = msg.get("role", "").lower()
-        content = msg.get("content", "")
-        
-        if role not in ["system", "user", "assistant"]:
-            return False, f"Le rôle '{role}' n'est pas valide. Utilisez 'system', 'user' ou 'assistant'.", None
-        
-        if not isinstance(content, str) or not content.strip():
-            return False, f"Le contenu du message à l'index {idx} ne peut pas être vide.", None
-        
-        # Formater selon le rôle (format plus naturel pour GPT-2)
-        if role == "system":
-            prompt_parts.append(f"System: {content.strip()}")
-        elif role == "user":
-            prompt_parts.append(f"User: {content.strip()}")
-        elif role == "assistant":
-            prompt_parts.append(f"Assistant: {content.strip()}")
+        if isinstance(msg, str):
+            # Message simple (string)
+            if not msg.strip():
+                return False, f"Le message à l'index {idx} ne peut pas être vide.", None
+            prompt_parts.append(msg.strip())
+        elif isinstance(msg, dict):
+            # Message dict - extraire le contenu (on ignore les rôles, formatage géré par l'app)
+            content = msg.get("content") or msg.get("text") or msg.get("message")
+            if content is None:
+                return False, f"Le message à l'index {idx} doit contenir 'content', 'text' ou 'message'.", None
+            if not isinstance(content, str) or not content.strip():
+                return False, f"Le contenu du message à l'index {idx} ne peut pas être vide.", None
+            prompt_parts.append(content.strip())
+        else:
+            return False, f"Le message à l'index {idx} doit être une string ou un dictionnaire.", None
     
-    # Créer le prompt final avec un format plus adapté à GPT-2
-    # Pour GPT-2, on termine par "Assistant:" pour indiquer qu'on attend une réponse
+    # Concaténation simple avec des sauts de ligne (sans formatage de rôles)
     formatted_prompt = "\n".join(prompt_parts)
-    if not formatted_prompt.strip().endswith("Assistant:"):
-        formatted_prompt += "\nAssistant:"
     
     return True, None, formatted_prompt
 
@@ -81,7 +79,9 @@ def chat(gpu_id: int):
     
     Body JSON requis:
         {
-            "messages": list,         # Requis: liste de messages [{"role": "user/assistant/system", "content": "..."}]
+            "messages": list,         # Requis: liste de messages (strings ou dicts avec 'content')
+                                     # Exemples: ["msg1", "msg2"] ou [{"content": "msg1"}, ...]
+                                     # L'API concatène simplement les messages, le formatage est géré par l'app client
             "temperature": float,     # Optionnel: température pour la génération (défaut: 0.7)
             "max_new_tokens": int     # Optionnel: nombre max de nouveaux tokens (défaut: 512)
         }
