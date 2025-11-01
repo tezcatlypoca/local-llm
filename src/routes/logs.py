@@ -130,7 +130,10 @@ def stream_logs():
             headers={
                 'Cache-Control': 'no-cache',
                 'X-Accel-Buffering': 'no',  # Désactiver le buffering nginx si présent
-                'Connection': 'keep-alive'
+                'Connection': 'keep-alive',
+                'Access-Control-Allow-Origin': '*',  # CORS pour SSE
+                'Access-Control-Allow-Methods': 'GET, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
             }
         )
     

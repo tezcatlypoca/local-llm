@@ -1,5 +1,6 @@
 import logging
 from flask import Flask, jsonify
+from flask_cors import CORS
 from routes.models import models_bp
 from routes.model_management import model_management_bp
 from routes.health import health_bp
@@ -8,6 +9,23 @@ from routes.logs import logs_bp
 from utils.log_buffer import setup_log_buffer_handler
 
 app = Flask(__name__)
+
+# Configuration CORS pour permettre les requêtes depuis les fichiers HTML locaux et autres origines
+# Cela permet notamment d'utiliser le viewer HTML depuis le système de fichiers
+CORS(app, resources={
+    r"/logs/*": {
+        "origins": "*",
+        "methods": ["GET", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type"]
+    },
+    r"/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type"]
+    }
+})
 
 # Configuration du logging avec buffer en mémoire
 # Cela capture tous les logs pour le streaming en temps réel via l'API
@@ -41,6 +59,20 @@ def root():
         'message': 'API Flask active',
         'status': 'ok'
     })
+
+
+@app.route('/logs/viewer', methods=['GET'])
+def logs_viewer():
+    """
+    Route pour servir le viewer HTML des logs.
+    Permet d'éviter les problèmes CORS en servant le fichier depuis Flask.
+    """
+    from flask import send_from_directory
+    import os
+    
+    # Chemin vers le fichier HTML
+    doc_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'doc')
+    return send_from_directory(doc_dir, 'logs_viewer_example.html')
 
 
 if __name__ == '__main__':
