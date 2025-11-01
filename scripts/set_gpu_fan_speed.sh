@@ -87,55 +87,115 @@ set_fan_speed() {
     local pwm_value=$((speed_percent * 255 / 100))
     
     # Trouver le fichier PWM approprié (pwm1, pwm2, etc.)
-    local pwm_file=""
-    local pwm_enable_file=""
+    # Les ventilateurs GPU sont généralement sur pwm1 ou pwm2
     
-    # Chercher pwm1, pwm2, etc. jusqu'à pwm5
+    # Chercher d'abord pwm1 (le plus commun pour les ventilateurs GPU)
+    local found_pwm=false
+    
     for i in {1..5}; do
-        if [ -f "$hwmon_path/pwm${i}_enable" ] && [ -f "$hwmon_path/pwm${i}" ]; then
-            pwm_file="$hwmon_path/pwm${i}"
-            pwm_enable_file="$hwmon_path/pwm${i}_enable"
-            
-            # Vérifier si c'est le ventilateur du GPU (pas d'autres capteurs)
-            # Les ventilateurs GPU sont généralement sur pwm1 ou pwm2
-            local current_mode=$(cat "$pwm_enable_file" 2>/dev/null || echo "0")
-            
-            echo -e "${YELLOW}📌 Configuration de $hwmon_path (pwm${i})${NC}"
-            
-            # Sauvegarder le mode actuel (si on veut le restaurer plus tard)
-            echo "$current_mode" > "$hwmon_path/pwm${i}_enable.backup" 2>/dev/null || true
-            
-            # Activer le contrôle manuel (1 = manuel, 2 = automatique)
-            echo "1" > "$pwm_enable_file" 2>/dev/null || {
-                echo -e "${RED}❌ Impossible d'activer le contrôle manuel pour $hwmon_path${NC}"
-                continue
-            }
-            
-            # Définir la vitesse
-            echo "$pwm_value" > "$pwm_file" 2>/dev/null || {
-                echo -e "${RED}❌ Impossible de définir la vitesse pour $hwmon_path${NC}"
-                continue
-            }
-            
-            # Lire la valeur pour vérification
-            local actual_value=$(cat "$pwm_file" 2>/dev/null || echo "0")
-            # Calculer le pourcentage (approximation simple)
-            local actual_percent=$((actual_value * 100 / 255))
-            
-            echo -e "${GREEN}✅ Ventilateur configuré: ~${actual_percent}% (PWM: $actual_value/255)${NC}"
-            
-            # Afficher la température actuelle si disponible
-            if [ -f "$hwmon_path/temp1_input" ]; then
-                local temp=$(cat "$hwmon_path/temp1_input" 2>/dev/null || echo "0")
-                temp=$((temp / 1000))  # Convertir de millidegrés à degrés
-                echo "   Température actuelle: ${temp}°C"
+        local pwm_file="$hwmon_path/pwm${i}"
+        local pwm_enable_file="$hwmon_path/pwm${i}_enable"
+        
+        if [ -f "$pwm_enable_file" ] && [ -f "$pwm_file" ]; then
+            # Vérifier s'il y a un fichier fan correspondant (fan1_input, etc.)
+            local has_fan_input=false
+            if [ -f "$hwmon_path/fan${i}_input" ]; then
+                has_fan_input=true
             fi
             
-            return 0
+            # Si c'est pwm1 ou si c'est un PWM avec fan_input, c'est probablement le ventilateur
+            if [ "$i" = "1" ] || [ "$has_fan_input" = "true" ]; then
+                found_pwm=true
+                
+                echo -e "${YELLOW}📌 Configuration de $hwmon_path (pwm${i})${NC}"
+                
+                # Vérifier les limites PWM si disponibles
+                local pwm_min=0
+                local pwm_max=255
+                if [ -f "$hwmon_path/pwm${i}_min" ]; then
+                    pwm_min=$(cat "$hwmon_path/pwm${i}_min" 2>/dev/null || echo "0")
+                    echo "   PWM min disponible: $pwm_min"
+                fi
+                if [ -f "$hwmon_path/pwm${i}_max" ]; then
+                    pwm_max=$(cat "$hwmon_path/pwm${i}_max" 2>/dev/null || echo "255")
+                    echo "   PWM max disponible: $pwm_max"
+                fi
+                
+                # S'assurer que la valeur est dans les limites
+                if [ "$pwm_value" -lt "$pwm_min" ]; then
+                    echo -e "${YELLOW}⚠️  Valeur PWM $pwm_value < min $pwm_min, utilisation de $pwm_min${NC}"
+                    pwm_value=$pwm_min
+                fi
+                if [ "$pwm_value" -gt "$pwm_max" ]; then
+                    echo -e "${YELLOW}⚠️  Valeur PWM $pwm_value > max $pwm_max, utilisation de $pwm_max${NC}"
+                    pwm_value=$pwm_max
+                fi
+                
+                # Vérifier le mode actuel
+                local current_mode=$(cat "$pwm_enable_file" 2>/dev/null || echo "0")
+                echo "   Mode actuel: $current_mode (0=disable, 1=manuel, 2=auto)"
+                
+                # Sauvegarder le mode actuel
+                echo "$current_mode" > "$hwmon_path/pwm${i}_enable.backup" 2>/dev/null || true
+                
+                # Activer le contrôle manuel (1 = manuel, 2 = automatique)
+                # Note: Certains systèmes nécessitent d'écrire "1" deux fois
+                if ! echo "1" > "$pwm_enable_file" 2>/dev/null; then
+                    echo -e "${RED}❌ Impossible d'activer le contrôle manuel pour pwm${i}${NC}"
+                    continue
+                fi
+                
+                # Vérifier que le mode a bien été activé
+                sleep 0.1
+                local new_mode=$(cat "$pwm_enable_file" 2>/dev/null || echo "0")
+                if [ "$new_mode" != "1" ]; then
+                    echo -e "${YELLOW}⚠️  Tentative supplémentaire d'activation du mode manuel${NC}"
+                    echo "1" > "$pwm_enable_file" 2>/dev/null || true
+                    sleep 0.1
+                fi
+                
+                # Définir la vitesse
+                if ! echo "$pwm_value" > "$pwm_file" 2>/dev/null; then
+                    echo -e "${RED}❌ Impossible de définir la vitesse pour pwm${i}${NC}"
+                    continue
+                fi
+                
+                # Lire la valeur pour vérification
+                sleep 0.2  # Laisser le temps au matériel de réagir
+                local actual_value=$(cat "$pwm_file" 2>/dev/null || echo "0")
+                local actual_percent=$((actual_value * 100 / 255))
+                
+                echo -e "${GREEN}✅ PWM configuré: ~${actual_percent}% (PWM: $actual_value/255)${NC}"
+                
+                # Vérifier la vitesse réelle du ventilateur si disponible
+                if [ -f "$hwmon_path/fan${i}_input" ]; then
+                    local fan_speed=$(cat "$hwmon_path/fan${i}_input" 2>/dev/null || echo "0")
+                    if [ "$fan_speed" -gt 0 ]; then
+                        echo -e "${GREEN}   ✅ Ventilateur en rotation: ${fan_speed} RPM${NC}"
+                    else
+                        echo -e "${YELLOW}   ⚠️  Ventilateur à 0 RPM - peut nécessiter une valeur PWM plus élevée${NC}"
+                        echo "      Essayez d'augmenter la vitesse (ex: 30-40%)"
+                    fi
+                fi
+                
+                # Afficher la température actuelle si disponible
+                if [ -f "$hwmon_path/temp1_input" ]; then
+                    local temp=$(cat "$hwmon_path/temp1_input" 2>/dev/null || echo "0")
+                    temp=$((temp / 1000))
+                    echo "   Température: ${temp}°C"
+                fi
+                
+                return 0
+            fi
         fi
     done
     
-    echo -e "${RED}❌ Aucun fichier PWM trouvé dans $hwmon_path${NC}"
+    if [ "$found_pwm" = "false" ]; then
+        echo -e "${RED}❌ Aucun fichier PWM de ventilateur trouvé dans $hwmon_path${NC}"
+        echo "   Fichiers disponibles:"
+        ls -la "$hwmon_path"/pwm* 2>/dev/null | head -5 || echo "      (aucun fichier PWM trouvé)"
+    fi
+    
     return 1
 }
 
@@ -220,8 +280,13 @@ echo "   - Surveillez les températures avec: watch -n 1 rocm-smi"
 echo "   - Pour revenir au mode automatique, utilisez le script restore_fan_auto.sh"
 echo
 echo "📊 Vérifier la configuration:"
+echo "   # Voir les valeurs PWM:"
+echo "   cat /sys/class/drm/card*/device/hwmon/hwmon*/pwm1"
+echo "   # Voir la vitesse réelle des ventilateurs:"
+echo "   cat /sys/class/drm/card*/device/hwmon/hwmon*/fan1_input"
+echo "   # Voir les températures:"
 echo "   rocm-smi -a"
-echo "   # ou"
-echo "   watch -n 1 'cat /sys/class/drm/card*/device/hwmon/hwmon*/pwm1'"
+echo "   # Ou avec watch pour monitoring en temps réel:"
+echo "   watch -n 1 'echo \"PWM: \" \$(cat /sys/class/drm/card0/device/hwmon/hwmon*/pwm1 2>/dev/null | head -1) \" RPM: \" \$(cat /sys/class/drm/card0/device/hwmon/hwmon*/fan1_input 2>/dev/null | head -1)'"
 echo
 
