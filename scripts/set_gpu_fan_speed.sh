@@ -11,7 +11,8 @@ Usage:
     speed_percent: Pourcentage de vitesse du ventilateur (20-100, défaut: 25)
 """
 
-set -e
+# Ne pas utiliser set -e pour permettre la gestion d'erreurs manuelle
+# set -e
 
 # Couleurs pour les messages
 GREEN='\033[0;32m'
@@ -20,7 +21,23 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Vitesse par défaut (25%)
-FAN_SPEED_PERCENT=${1:-25}
+# Si le premier argument commence par "--", c'est une option
+if [[ "${1:-}" == --wait ]]; then
+    WAIT_FOR_GPUS=true
+    FAN_SPEED_PERCENT=${2:-25}
+elif [[ "${1:-}" == --* ]]; then
+    echo -e "${RED}❌ Option inconnue: $1${NC}"
+    echo "Usage: $0 [--wait] [speed_percent]"
+    exit 1
+else
+    WAIT_FOR_GPUS=false
+    FAN_SPEED_PERCENT=${1:-25}
+fi
+
+# Si INVOCATION_ID est définie (systemd), activer l'attente automatiquement
+if [ -n "$INVOCATION_ID" ]; then
+    WAIT_FOR_GPUS=true
+fi
 
 # Validation de la vitesse
 if ! [[ "$FAN_SPEED_PERCENT" =~ ^[0-9]+$ ]] || [ "$FAN_SPEED_PERCENT" -lt 20 ] || [ "$FAN_SPEED_PERCENT" -gt 100 ]; then
@@ -66,9 +83,8 @@ set_fan_speed() {
     local hwmon_path=$1
     local speed_percent=$2
     
-    # Convertir le pourcentage en valeur PWM (0-255)
-    local pwm_value=$(echo "scale=0; ($speed_percent * 255) / 100" | bc)
-    pwm_value=${pwm_value%.*}  # Enlever les décimales
+    # Convertir le pourcentage en valeur PWM (0-255) - calcul bash natif
+    local pwm_value=$((speed_percent * 255 / 100))
     
     # Trouver le fichier PWM approprié (pwm1, pwm2, etc.)
     local pwm_file=""
@@ -103,9 +119,10 @@ set_fan_speed() {
             
             # Lire la valeur pour vérification
             local actual_value=$(cat "$pwm_file" 2>/dev/null || echo "0")
-            local actual_percent=$(echo "scale=1; ($actual_value * 100) / 255" | bc)
+            # Calculer le pourcentage (approximation simple)
+            local actual_percent=$((actual_value * 100 / 255))
             
-            echo -e "${GREEN}✅ Ventilateur configuré: ${actual_percent}% (PWM: $actual_value/255)${NC}"
+            echo -e "${GREEN}✅ Ventilateur configuré: ~${actual_percent}% (PWM: $actual_value/255)${NC}"
             
             # Afficher la température actuelle si disponible
             if [ -f "$hwmon_path/temp1_input" ]; then
@@ -122,8 +139,39 @@ set_fan_speed() {
     return 1
 }
 
-# Trouver tous les GPUs AMD
-HWMON_PATHS=($(find_gpu_hwmon_paths))
+# Fonction pour attendre que les GPUs soient prêts (avec retry)
+wait_for_gpus() {
+    local max_attempts=30
+    local attempt=0
+    local wait_seconds=2
+    
+    while [ $attempt -lt $max_attempts ]; do
+        HWMON_PATHS=($(find_gpu_hwmon_paths))
+        if [ ${#HWMON_PATHS[@]} -gt 0 ]; then
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        if [ $attempt -lt $max_attempts ]; then
+            echo -e "${YELLOW}⏳ Attente des GPUs... (tentative $attempt/$max_attempts)${NC}"
+            sleep $wait_seconds
+        fi
+    done
+    
+    return 1
+}
+
+# Trouver tous les GPUs AMD (avec retry si nécessaire)
+if [ "$WAIT_FOR_GPUS" = "true" ]; then
+    if ! wait_for_gpus; then
+        echo -e "${YELLOW}⚠️  Aucun GPU AMD détecté après attente${NC}"
+        echo "Le service continuera pour permettre un redémarrage automatique"
+        # Ne pas faire exit 1 ici pour le service, laisser systemd gérer
+        HWMON_PATHS=()
+    fi
+else
+    HWMON_PATHS=($(find_gpu_hwmon_paths))
+fi
 
 if [ ${#HWMON_PATHS[@]} -eq 0 ]; then
     echo -e "${RED}❌ Aucun GPU AMD détecté (pas de fichiers hwmon trouvés)${NC}"
@@ -132,7 +180,11 @@ if [ ${#HWMON_PATHS[@]} -eq 0 ]; then
     echo "1. Vérifiez que les drivers amdgpu sont chargés: lsmod | grep amdgpu"
     echo "2. Vérifiez les chemins: ls -la /sys/class/drm/card*/device/hwmon/"
     echo "3. Vérifiez les permissions: vous devez être root"
-    exit 1
+    echo
+    # Si pas de GPU, exit avec code 0 pour ne pas faire échouer le service
+    # (peut être utile si les GPUs ne sont pas encore initialisés)
+    echo -e "${YELLOW}⚠️  Sortie avec code 0 (service peut être relancé)${NC}"
+    exit 0
 fi
 
 echo -e "${GREEN}✅ ${#HWMON_PATHS[@]} GPU(s) AMD détecté(s)${NC}"
@@ -148,8 +200,10 @@ for hwmon_path in "${HWMON_PATHS[@]}"; do
 done
 
 if [ $SUCCESS_COUNT -eq 0 ]; then
-    echo -e "${RED}❌ Aucun ventilateur n'a pu être configuré${NC}"
-    exit 1
+    echo -e "${YELLOW}⚠️  Aucun ventilateur n'a pu être configuré${NC}"
+    echo "Cela peut être normal si les GPUs ne sont pas encore prêts"
+    # Exit avec code 0 pour permettre au service de se relancer automatiquement
+    exit 0
 fi
 
 echo "=========================================="

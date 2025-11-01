@@ -51,18 +51,24 @@ echo "📝 Création du fichier de service..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=GPU Fan Speed Control (AMD)
-After=graphical.target
-Wants=graphical.target
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash $PROJECT_DIR/scripts/set_gpu_fan_speed.sh $FAN_SPEED_PERCENT
+ExecStart=/bin/bash $PROJECT_DIR/scripts/set_gpu_fan_speed.sh --wait $FAN_SPEED_PERCENT
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
+# Redémarrer si le script échoue (peut arriver si GPUs pas encore prêts)
+Restart=on-failure
+RestartSec=10
+# Ne pas redémarrer indéfiniment
+StartLimitInterval=300
+StartLimitBurst=3
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 EOF
 
 echo -e "${GREEN}✅ Fichier de service créé: $SERVICE_FILE${NC}"
