@@ -308,9 +308,13 @@ class LLMManager:
             
             # Génération
             with torch.no_grad():
+                # S'assurer que la température est toujours > 0 pour éviter les problèmes numériques
+                # Une température trop basse (< 0.01) peut causer des NaN/inf dans les probabilités
+                safe_temperature = max(temperature, 0.01) if do_sample else temperature
+                
                 generation_config = {
                     "max_length": max_length,
-                    "temperature": temperature,
+                    "temperature": safe_temperature,
                     "top_p": top_p,
                     "do_sample": do_sample,
                     "repetition_penalty": 1.1,  # Pénalité contre les répétitions (1.0 = pas de pénalité, >1.0 = pénalise les répétitions)
@@ -324,7 +328,34 @@ class LLMManager:
                     generation_config["max_new_tokens"] = max_new_tokens
                     generation_config.pop("max_length", None)
                 
-                outputs = model.generate(**inputs, **generation_config)
+                # Pour éviter les problèmes de probabilités invalides, s'assurer que top_p est valide
+                if do_sample and top_p <= 0:
+                    logger.warning(f"top_p invalide ({top_p}), utilisation de 0.9 par défaut")
+                    generation_config["top_p"] = 0.9
+                
+                # Si la température a été ajustée, logger l'avertissement
+                if safe_temperature != temperature and do_sample:
+                    logger.debug(f"Température ajustée de {temperature} à {safe_temperature} pour éviter les problèmes numériques")
+                
+                try:
+                    outputs = model.generate(**inputs, **generation_config)
+                except RuntimeError as e:
+                    # Gestion spécifique de l'erreur de probabilités invalides
+                    error_msg = str(e)
+                    if "probability tensor" in error_msg.lower() or "nan" in error_msg.lower() or "inf" in error_msg.lower():
+                        logger.warning(f"Erreur de probabilités invalides détectée: {error_msg}")
+                        # Réessayer avec des paramètres plus stables
+                        logger.info("Réessai avec paramètres de génération plus stables...")
+                        generation_config["temperature"] = max(safe_temperature, 0.5)  # Température minimale plus élevée
+                        generation_config["top_p"] = min(top_p, 0.95)  # top_p légèrement réduit
+                        # Ajouter top_k pour limiter le nombre de tokens candidats
+                        if "top_k" not in generation_config:
+                            generation_config["top_k"] = 50
+                        logger.debug(f"Nouveaux paramètres: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
+                        outputs = model.generate(**inputs, **generation_config)
+                    else:
+                        # Autre erreur RuntimeError, la remonter
+                        raise
             
             # Décodage de la réponse
             # Si on veut seulement les nouveaux tokens générés

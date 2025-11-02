@@ -123,9 +123,10 @@ def chat(gpu_id: int):
             }), 400
         
         # Extraire les paramètres optionnels avec valeurs par défaut
-        # Valeurs par défaut optimisées : température plus basse pour des réponses plus précises,
+        # Valeurs par défaut optimisées : température modérée pour éviter les problèmes numériques,
         # max_new_tokens réduit pour éviter les réponses trop longues/hors sujet
-        temperature = request_data.get('temperature', 0.3)
+        # Note: température minimale recommandée: 0.5 pour éviter les NaN/inf dans les probabilités
+        temperature = request_data.get('temperature', 0.7)
         max_new_tokens = request_data.get('max_new_tokens', 150)
         
         # Valider les types des paramètres optionnels
@@ -285,9 +286,10 @@ def completion(gpu_id: int):
             }), 400
         
         # Extraire les paramètres optionnels avec valeurs par défaut
-        # Valeurs par défaut optimisées : température plus basse pour des réponses plus précises,
+        # Valeurs par défaut optimisées : température modérée pour éviter les problèmes numériques,
         # max_new_tokens réduit pour éviter les réponses trop longues/hors sujet
-        temperature = request_data.get('temperature', 0.3)
+        # Note: température minimale recommandée: 0.5 pour éviter les NaN/inf dans les probabilités
+        temperature = request_data.get('temperature', 0.7)
         max_new_tokens = request_data.get('max_new_tokens', 150)
         
         # Valider les types des paramètres optionnels
