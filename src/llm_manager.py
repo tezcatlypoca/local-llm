@@ -250,6 +250,7 @@ class LLMManager:
         temperature: float = 0.7,
         top_p: float = 0.9,
         do_sample: bool = True,
+        structured_messages: Optional[List[Dict[str, str]]] = None,
         **generation_kwargs
     ) -> Optional[str]:
         """
@@ -292,29 +293,41 @@ class LLMManager:
             # Cela formate correctement les prompts pour les modèles conversationnels
             if hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
                 try:
-                    # Si le prompt contient plusieurs lignes (messages séparés), essayer de les parser
-                    # Sinon, traiter comme un seul message utilisateur
-                    prompt_lines = [line.strip() for line in prompt.split('\n') if line.strip()]
-                    if len(prompt_lines) > 1:
-                        # Plusieurs messages - essayer de les formater en format chat
-                        messages = []
-                        for line in prompt_lines:
-                            messages.append({"role": "user", "content": line})
+                    # Priorité: utiliser structured_messages si fourni (depuis /chat avec rôles)
+                    if structured_messages and isinstance(structured_messages, list) and len(structured_messages) > 0:
+                        # Messages structurés fournis - utiliser directement
                         formatted_prompt = tokenizer.apply_chat_template(
-                            messages, 
+                            structured_messages, 
                             tokenize=False, 
                             add_generation_prompt=True
                         )
+                        use_chat_template = True
+                        logger.debug(f"Prompt formaté avec apply_chat_template depuis structured_messages (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
                     else:
-                        # Un seul message
-                        messages = [{"role": "user", "content": prompt.strip()}]
-                        formatted_prompt = tokenizer.apply_chat_template(
-                            messages, 
-                            tokenize=False, 
-                            add_generation_prompt=True
-                        )
-                    use_chat_template = True
-                    logger.debug(f"Prompt formaté avec apply_chat_template (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
+                        # Fallback: parser le prompt simple
+                        # Si le prompt contient plusieurs lignes (messages séparés), essayer de les parser
+                        # Sinon, traiter comme un seul message utilisateur
+                        prompt_lines = [line.strip() for line in prompt.split('\n') if line.strip()]
+                        if len(prompt_lines) > 1:
+                            # Plusieurs messages - essayer de les formater en format chat
+                            messages = []
+                            for line in prompt_lines:
+                                messages.append({"role": "user", "content": line})
+                            formatted_prompt = tokenizer.apply_chat_template(
+                                messages, 
+                                tokenize=False, 
+                                add_generation_prompt=True
+                            )
+                        else:
+                            # Un seul message
+                            messages = [{"role": "user", "content": prompt.strip()}]
+                            formatted_prompt = tokenizer.apply_chat_template(
+                                messages, 
+                                tokenize=False, 
+                                add_generation_prompt=True
+                            )
+                        use_chat_template = True
+                        logger.debug(f"Prompt formaté avec apply_chat_template depuis prompt simple (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
                 except Exception as e:
                     logger.warning(f"Erreur avec apply_chat_template pour {self.model_names[gpu_id]}, utilisation du prompt brut: {e}", exc_info=True)
                     # Fallback : utiliser le prompt tel quel
@@ -459,7 +472,8 @@ class LLMManager:
             
             # Décoder les nouveaux tokens uniquement
             generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
-            logger.debug(f"Texte décodé brut: {generated_text[:100]}...")
+            logger.info(f"Texte décodé brut (premiers 500 chars): {generated_text[:500]}")
+            logger.debug(f"Texte décodé complet (longueur: {len(generated_text)}): {generated_text}")
             
             # Nettoyer la réponse : retirer les tokens spéciaux de fin de conversation pour les modèles de chat
             # Tokens spéciaux spécifiques à Qwen et autres modèles
@@ -503,7 +517,17 @@ class LLMManager:
                     generated_text = generated_text.replace(pattern, '')
                 generated_text = generated_text.strip()
             
-            logger.debug(f"Texte généré (après nettoyage): {generated_text[:200]}...")
+            logger.info(f"Texte généré final (après nettoyage, longueur: {len(generated_text)}): {generated_text[:500]}")
+            
+            # Vérifier si la réponse est vide ou très courte après nettoyage
+            if not generated_text.strip():
+                # Re-décoder pour obtenir le texte brut
+                raw_text = tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
+                logger.warning(f"La réponse générée est vide après nettoyage pour {self.model_names[gpu_id]}. Texte brut avant nettoyage (premiers 200 chars): {raw_text[:200]}")
+                # Retourner le texte brut si le nettoyage a tout supprimé mais qu'il y a du contenu brut
+                if raw_text:
+                    logger.info("Retour du texte brut car le nettoyage a supprimé tout le contenu")
+                    return raw_text
             
             return generated_text.strip()
             

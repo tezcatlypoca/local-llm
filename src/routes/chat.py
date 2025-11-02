@@ -22,17 +22,17 @@ chat_bp = Blueprint('chat', __name__)
 def _validate_chat_messages(messages):
     """
     Valide et prépare les messages pour /chat.
-    API pure : on accepte les messages tels quels sans ajouter de formatage ou contexte.
     
     Formats acceptés:
-    - list de strings : ["message1", "message2", ...]
-    - list de dicts avec 'content' : [{"content": "..."}, ...]
-    - list de dicts avec 'role' et 'content' : [{"role": "...", "content": "..."}]
-    
-    L'API ne fait que concaténer les messages, le formatage/contextualisation est géré par l'app client.
+    - list de strings : ["message1", "message2", ...] -> traité comme messages utilisateur
+    - list de dicts avec 'content' : [{"content": "..."}, ...] -> traité comme messages utilisateur
+    - list de dicts avec 'role' et 'content' : [{"role": "user/assistant/system", "content": "..."}]
     
     Returns:
-        (is_valid: bool, error_message: str, formatted_prompt: str)
+        (is_valid: bool, error_message: str, formatted_data: dict)
+        formatted_data contient:
+            - "messages": list de dicts avec role/content (pour apply_chat_template)
+            - "simple_prompt": string (pour fallback ou modèles non-chat)
     """
     if messages is None:
         return False, "Le champ 'messages' est requis pour /chat.", None
@@ -44,29 +44,50 @@ def _validate_chat_messages(messages):
     if len(messages) == 0:
         return False, "La liste de messages ne peut pas être vide.", None
     
-    # Extraire le contenu de chaque message (format flexible)
+    # Extraire les messages au format structuré
+    structured_messages = []
     prompt_parts = []
+    
     for idx, msg in enumerate(messages):
         if isinstance(msg, str):
-            # Message simple (string)
+            # Message simple (string) -> traité comme message utilisateur
             if not msg.strip():
                 return False, f"Le message à l'index {idx} ne peut pas être vide.", None
+            structured_messages.append({"role": "user", "content": msg.strip()})
             prompt_parts.append(msg.strip())
         elif isinstance(msg, dict):
-            # Message dict - extraire le contenu (on ignore les rôles, formatage géré par l'app)
+            # Message dict - vérifier s'il a un role
+            role = msg.get("role")
             content = msg.get("content") or msg.get("text") or msg.get("message")
+            
             if content is None:
                 return False, f"Le message à l'index {idx} doit contenir 'content', 'text' ou 'message'.", None
             if not isinstance(content, str) or not content.strip():
                 return False, f"Le contenu du message à l'index {idx} ne peut pas être vide.", None
+            
+            # Si un rôle est fourni, l'utiliser (normaliser en lowercase)
+            if role and isinstance(role, str):
+                normalized_role = role.lower()
+                # Valider le rôle
+                if normalized_role not in ["user", "assistant", "system"]:
+                    logger.warning(f"Rôle invalide '{role}' au message {idx}, utilisation de 'user' par défaut")
+                    normalized_role = "user"
+                structured_messages.append({"role": normalized_role, "content": content.strip()})
+            else:
+                # Pas de rôle -> traité comme utilisateur
+                structured_messages.append({"role": "user", "content": content.strip()})
+            
             prompt_parts.append(content.strip())
         else:
             return False, f"Le message à l'index {idx} doit être une string ou un dictionnaire.", None
     
-    # Concaténation simple avec des sauts de ligne (sans formatage de rôles)
-    formatted_prompt = "\n".join(prompt_parts)
+    # Retourner à la fois les messages structurés et le prompt simple (pour compatibilité)
+    formatted_data = {
+        "messages": structured_messages,
+        "simple_prompt": "\n".join(prompt_parts)
+    }
     
-    return True, None, formatted_prompt
+    return True, None, formatted_data
 
 
 @chat_bp.route('/chat/<int:gpu_id>', methods=['POST'])
@@ -114,7 +135,7 @@ def chat(gpu_id: int):
         
         # Extraire et valider les messages (format conversationnel)
         messages = request_data.get('messages')
-        is_valid, error_msg, formatted_message = _validate_chat_messages(messages)
+        is_valid, error_msg, message_data = _validate_chat_messages(messages)
         
         if not is_valid:
             return jsonify({
@@ -186,15 +207,18 @@ def chat(gpu_id: int):
         model_name = gpu_status.get("model_name", "unknown")
         
         # Générer la réponse
+        # Passer les messages structurés si disponibles (pour apply_chat_template)
+        # Sinon utiliser le prompt simple
         logger.info(f"Génération de réponse sur GPU {gpu_id} avec modèle {model_name}...")
         response = manager.generate(
-            prompt=formatted_message,
+            prompt=message_data["simple_prompt"],
             gpu_id=gpu_id,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
             do_sample=True,
             top_p=0.9,
-            repetition_penalty=1.2  # Pénalité contre les répétitions (augmentée pour chat)
+            repetition_penalty=1.2,  # Pénalité contre les répétitions (augmentée pour chat)
+            structured_messages=message_data["messages"]  # Passer les messages structurés pour apply_chat_template
         )
         
         if response is None:
