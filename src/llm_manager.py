@@ -338,20 +338,42 @@ class LLMManager:
             
             # Génération
             with torch.no_grad():
-                # S'assurer que la température est toujours > 0 pour éviter les problèmes numériques
-                # Une température trop basse (< 0.01) peut causer des NaN/inf dans les probabilités
-                safe_temperature = max(temperature, 0.01) if do_sample else temperature
+                # Configuration spécifique pour Qwen - ces modèles nécessitent des paramètres plus stables
+                # pour éviter les problèmes de probabilités invalides (NaN/Inf) sur ROCm
+                if is_qwen and do_sample:
+                    # Température minimale plus élevée pour Qwen (0.3 au lieu de 0.01)
+                    # Cela évite les problèmes numériques avec float16 sur ROCm
+                    safe_temperature = max(temperature, 0.3)
+                    # Top_k systématique pour limiter les candidats et éviter les valeurs extrêmes
+                    safe_top_k = generation_kwargs.get("top_k", 50)
+                    # Top_p légèrement réduit pour plus de stabilité
+                    safe_top_p = min(top_p, 0.95)
+                    # Réduction de la repetition_penalty pour éviter les problèmes numériques
+                    safe_repetition_penalty = generation_kwargs.get("repetition_penalty", 1.1)
+                    if safe_repetition_penalty > 1.2:
+                        safe_repetition_penalty = 1.2
+                    logger.debug(f"Paramètres Qwen ajustés - temp: {safe_temperature}, top_k: {safe_top_k}, top_p: {safe_top_p}, rep_penalty: {safe_repetition_penalty}")
+                else:
+                    # Pour les autres modèles, utiliser les valeurs standard
+                    safe_temperature = max(temperature, 0.01) if do_sample else temperature
+                    safe_top_k = generation_kwargs.get("top_k")
+                    safe_top_p = top_p
+                    safe_repetition_penalty = generation_kwargs.get("repetition_penalty", 1.1)
                 
                 generation_config = {
                     "max_length": max_length,
                     "temperature": safe_temperature,
-                    "top_p": top_p,
+                    "top_p": safe_top_p,
                     "do_sample": do_sample,
-                    "repetition_penalty": 1.1,  # Pénalité contre les répétitions (1.0 = pas de pénalité, >1.0 = pénalise les répétitions)
+                    "repetition_penalty": safe_repetition_penalty,
                     "pad_token_id": tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
                     "eos_token_id": tokenizer.eos_token_id,
                     **generation_kwargs
                 }
+                
+                # Ajouter top_k pour Qwen si pas déjà présent
+                if is_qwen and do_sample and safe_top_k is not None and "top_k" not in generation_config:
+                    generation_config["top_k"] = safe_top_k
                 
                 # Si max_new_tokens est spécifié, l'utiliser à la place de max_length
                 if max_new_tokens is not None:
@@ -359,8 +381,8 @@ class LLMManager:
                     generation_config.pop("max_length", None)
                 
                 # Pour éviter les problèmes de probabilités invalides, s'assurer que top_p est valide
-                if do_sample and top_p <= 0:
-                    logger.warning(f"top_p invalide ({top_p}), utilisation de 0.9 par défaut")
+                if do_sample and generation_config["top_p"] <= 0:
+                    logger.warning(f"top_p invalide ({generation_config['top_p']}), utilisation de 0.9 par défaut")
                     generation_config["top_p"] = 0.9
                 
                 # Si la température a été ajustée, logger l'avertissement
@@ -377,15 +399,44 @@ class LLMManager:
                     logger.error(f"RuntimeError lors de la génération pour {self.model_names[gpu_id]}: {error_msg}")
                     if "probability tensor" in error_msg.lower() or "nan" in error_msg.lower() or "inf" in error_msg.lower():
                         logger.warning(f"Erreur de probabilités invalides détectée: {error_msg}")
-                        # Réessayer avec des paramètres plus stables
-                        logger.info("Réessai avec paramètres de génération plus stables...")
-                        generation_config["temperature"] = max(safe_temperature, 0.5)  # Température minimale plus élevée
-                        generation_config["top_p"] = min(top_p, 0.95)  # top_p légèrement réduit
-                        # Ajouter top_k pour limiter le nombre de tokens candidats
-                        if "top_k" not in generation_config:
-                            generation_config["top_k"] = 50
-                        logger.debug(f"Nouveaux paramètres: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
-                        outputs = model.generate(**inputs, **generation_config)
+                        
+                        # Stratégie de réessai progressive pour Qwen
+                        if is_qwen:
+                            # Pour Qwen, essayer d'abord avec des paramètres encore plus stables
+                            logger.info("Réessai Qwen avec paramètres de génération plus stables...")
+                            generation_config["temperature"] = max(safe_temperature, 0.7)  # Température minimale encore plus élevée
+                            generation_config["top_p"] = 0.9  # Top_p fixe
+                            generation_config["top_k"] = 40  # Top_k réduit
+                            generation_config["repetition_penalty"] = 1.1  # Répétition penalty réduite
+                            logger.debug(f"Paramètres Qwen ajustés: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
+                            
+                            try:
+                                outputs = model.generate(**inputs, **generation_config)
+                                logger.info("Réessai réussi avec paramètres ajustés")
+                            except RuntimeError as e2:
+                                error_msg2 = str(e2)
+                                logger.warning(f"Deuxième tentative échouée: {error_msg2}")
+                                # Dernière tentative: désactiver l'échantillonnage (greedy decoding)
+                                logger.info("Dernière tentative avec décodage greedy (do_sample=False)...")
+                                generation_config["do_sample"] = False
+                                generation_config.pop("temperature", None)
+                                generation_config.pop("top_p", None)
+                                generation_config.pop("top_k", None)
+                                try:
+                                    outputs = model.generate(**inputs, **generation_config)
+                                    logger.info("Réessai réussi avec décodage greedy")
+                                except RuntimeError as e3:
+                                    logger.error(f"Toutes les tentatives ont échoué: {str(e3)}")
+                                    raise
+                        else:
+                            # Pour les autres modèles, utiliser la stratégie standard
+                            logger.info("Réessai avec paramètres de génération plus stables...")
+                            generation_config["temperature"] = max(safe_temperature, 0.5)
+                            generation_config["top_p"] = min(top_p, 0.95)
+                            if "top_k" not in generation_config:
+                                generation_config["top_k"] = 50
+                            logger.debug(f"Nouveaux paramètres: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
+                            outputs = model.generate(**inputs, **generation_config)
                     else:
                         # Autre erreur RuntimeError, la remonter
                         raise
