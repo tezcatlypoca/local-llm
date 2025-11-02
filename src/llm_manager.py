@@ -94,7 +94,19 @@ class LLMManager:
             # Chargement du tokenizer
             logger.info(f"Chargement du tokenizer pour '{model_name}'...")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            if tokenizer.pad_token is None:
+            
+            # Configuration spécifique pour les modèles Qwen
+            model_name_lower = model_name.lower()
+            if "qwen" in model_name_lower:
+                # Pour Qwen, s'assurer que le pad_token est configuré correctement
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                # Qwen utilise parfois im_end comme pad_token
+                if hasattr(tokenizer, 'im_end_id') and tokenizer.im_end_id is not None:
+                    logger.debug(f"Qwen tokenizer configuré avec im_end_id: {tokenizer.im_end_id}")
+                logger.info(f"Tokenizer Qwen configuré - pad_token: {tokenizer.pad_token}, eos_token: {tokenizer.eos_token}")
+            elif tokenizer.pad_token is None:
+                # Pour les autres modèles, utiliser eos_token comme pad_token par défaut
                 tokenizer.pad_token = tokenizer.eos_token
             
             # Chargement du modèle
@@ -269,6 +281,13 @@ class LLMManager:
         device = self.devices[gpu_id]
         
         try:
+            # Détection du type de modèle pour un traitement spécifique
+            model_name_lower = self.model_names[gpu_id].lower() if self.model_names[gpu_id] else ""
+            is_qwen = "qwen" in model_name_lower
+            use_chat_template = False
+            formatted_prompt = prompt
+            original_prompt = prompt  # Conserver le prompt original pour le décodage
+            
             # Pour les modèles de chat, essayer d'utiliser apply_chat_template si disponible
             # Cela formate correctement les prompts pour les modèles conversationnels
             if hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
@@ -294,15 +313,26 @@ class LLMManager:
                             tokenize=False, 
                             add_generation_prompt=True
                         )
-                    logger.debug(f"Prompt formaté avec apply_chat_template: {formatted_prompt[:200]}...")
-                    inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=True, truncation=True)
+                    use_chat_template = True
+                    logger.debug(f"Prompt formaté avec apply_chat_template (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
                 except Exception as e:
-                    logger.debug(f"Erreur avec apply_chat_template, utilisation du prompt brut: {e}")
+                    logger.warning(f"Erreur avec apply_chat_template pour {self.model_names[gpu_id]}, utilisation du prompt brut: {e}", exc_info=True)
                     # Fallback : utiliser le prompt tel quel
-                    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
-            else:
-                # Tokenisation standard pour les modèles non-chat
-                inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+                    formatted_prompt = prompt
+                    use_chat_template = False
+            
+            # Logging supplémentaire pour le débogage
+            if is_qwen:
+                logger.debug(f"Traitement Qwen - use_chat_template: {use_chat_template}, prompt_length: {len(prompt)}, formatted_length: {len(formatted_prompt)}")
+            
+            # Tokenisation : pas de padding nécessaire pour une seule séquence de génération
+            # Le padding est seulement utile pour le traitement par batch
+            inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=False, truncation=True)
+            
+            # Pour Qwen, s'assurer que le tokenizer a les bons paramètres
+            if is_qwen and tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                logger.debug("Token de padding configuré pour Qwen (utilise eos_token)")
             
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
@@ -338,10 +368,13 @@ class LLMManager:
                     logger.debug(f"Température ajustée de {temperature} à {safe_temperature} pour éviter les problèmes numériques")
                 
                 try:
+                    logger.debug(f"Début génération - input_ids shape: {inputs['input_ids'].shape}, device: {device}")
                     outputs = model.generate(**inputs, **generation_config)
+                    logger.debug(f"Génération terminée - outputs shape: {outputs.shape}")
                 except RuntimeError as e:
                     # Gestion spécifique de l'erreur de probabilités invalides
                     error_msg = str(e)
+                    logger.error(f"RuntimeError lors de la génération pour {self.model_names[gpu_id]}: {error_msg}")
                     if "probability tensor" in error_msg.lower() or "nan" in error_msg.lower() or "inf" in error_msg.lower():
                         logger.warning(f"Erreur de probabilités invalides détectée: {error_msg}")
                         # Réessayer avec des paramètres plus stables
@@ -356,34 +389,70 @@ class LLMManager:
                     else:
                         # Autre erreur RuntimeError, la remonter
                         raise
+                except Exception as e:
+                    logger.error(f"Erreur inattendue lors de la génération pour {self.model_names[gpu_id]}: {str(e)}", exc_info=True)
+                    raise
             
             # Décodage de la réponse
-            # Si on veut seulement les nouveaux tokens générés
-            if max_new_tokens is not None:
-                generated_text = tokenizer.decode(
-                    outputs[0][inputs["input_ids"].shape[1]:],
-                    skip_special_tokens=True
-                )
-            else:
-                generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                # Retirer le prompt de la réponse complète
-                if generated_text.startswith(prompt):
-                    generated_text = generated_text[len(prompt):].strip()
+            # Toujours extraire uniquement les nouveaux tokens générés
+            input_length = inputs["input_ids"].shape[1]
+            output_length = outputs[0].shape[0]
+            
+            # Vérifier qu'on a bien généré de nouveaux tokens
+            if output_length <= input_length:
+                logger.warning(f"Aucun nouveau token généré pour {self.model_names[gpu_id]} - output_length={output_length}, input_length={input_length}")
+                return ""
+            
+            generated_ids = outputs[0][input_length:]
+            logger.debug(f"Tokens générés: {len(generated_ids)} tokens (input: {input_length}, output: {output_length})")
+            
+            # Décoder les nouveaux tokens uniquement
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
+            logger.debug(f"Texte décodé brut: {generated_text[:100]}...")
             
             # Nettoyer la réponse : retirer les tokens spéciaux de fin de conversation pour les modèles de chat
-            # (ex: </s>, <|endoftext|>, etc.)
+            # Tokens spéciaux spécifiques à Qwen et autres modèles
             generated_text = generated_text.strip()
             
             # Retirer les préfixes/suffixes communs des modèles de chat qui peuvent rester
+            # Spécifiques à Qwen: <|im_start|>, <|im_end|>, <|endoftext|>
             chat_end_patterns = [
-                '</s>', '<|endoftext|>', '<|end|>', '<|im_end|>',
-                '\nUser:', '\nAssistant:', '\nSystem:'
+                '</s>', 
+                '<|endoftext|>', 
+                '<|end|>', 
+                '<|im_end|>',
+                '<|im_start|>',
+                '\nUser:', 
+                '\nAssistant:', 
+                '\nSystem:',
+                'User:',
+                'Assistant:',
+                'System:'
             ]
+            
+            # Retirer les patterns de fin
             for pattern in chat_end_patterns:
-                if generated_text.endswith(pattern):
+                # Retirer à la fin
+                while generated_text.endswith(pattern):
                     generated_text = generated_text[:-len(pattern)].strip()
-                if generated_text.startswith(pattern):
+                # Retirer au début
+                while generated_text.startswith(pattern):
                     generated_text = generated_text[len(pattern):].strip()
+            
+            # Pour Qwen spécifiquement, nettoyer les tokens de formatage qui peuvent rester
+            if is_qwen:
+                # Retirer les tokens de formatage Qwen qui peuvent apparaître
+                qwen_patterns = [
+                    '<|im_start|>assistant\n',
+                    '<|im_end|>\n',
+                    '\n<|im_end|>',
+                    '<|im_start|>',
+                ]
+                for pattern in qwen_patterns:
+                    generated_text = generated_text.replace(pattern, '')
+                generated_text = generated_text.strip()
+            
+            logger.debug(f"Texte généré (après nettoyage): {generated_text[:200]}...")
             
             return generated_text.strip()
             
