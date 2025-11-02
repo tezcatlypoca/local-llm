@@ -93,11 +93,11 @@ def chat(gpu_id: int):
         - 500: Erreur lors de la génération
     """
     try:
-        # Vérifier que le GPU ID est valide
-        if gpu_id not in [0, 1]:
+        # Vérifier que le GPU ID est valide (0, 1, ou -1 pour multi-GPU)
+        if gpu_id not in [0, 1, -1]:
             return jsonify({
                 'status': 'error',
-                'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
+                'message': f'GPU ID invalide: {gpu_id}. Doit être 0, 1, ou -1 (multi-GPU).'
             }), 400
         
         # Récupérer les données du body JSON (force=True permet d'accepter même sans Content-Type)
@@ -171,17 +171,25 @@ def chat(gpu_id: int):
                 'message': gpu_status["error"]
             }), 400
         
-        if not gpu_status.get("gpu_available", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'GPU {gpu_id} n\'est pas disponible.'
-            }), 404
-        
-        if not gpu_status.get("model_loaded", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
-            }), 404
+        # Vérification spécifique pour multi-GPU
+        if gpu_id == -1:
+            if not gpu_status.get("model_loaded", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Aucun modèle multi-GPU chargé. Chargez un modèle avec POST /models/load-multi-gpu/{model_name} d\'abord.'
+                }), 404
+        else:
+            if not gpu_status.get("gpu_available", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'GPU {gpu_id} n\'est pas disponible.'
+                }), 404
+            
+            if not gpu_status.get("model_loaded", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
+                }), 404
         
         model_name = gpu_status.get("model_name", "unknown")
         
@@ -245,11 +253,11 @@ def completion(gpu_id: int):
         - 500: Erreur lors de la génération
     """
     try:
-        # Vérifier que le GPU ID est valide
-        if gpu_id not in [0, 1]:
+        # Vérifier que le GPU ID est valide (0, 1, ou -1 pour multi-GPU)
+        if gpu_id not in [0, 1, -1]:
             return jsonify({
                 'status': 'error',
-                'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
+                'message': f'GPU ID invalide: {gpu_id}. Doit être 0, 1, ou -1 (multi-GPU).'
             }), 400
         
         # Récupérer les données du body JSON (force=True permet d'accepter même sans Content-Type)
@@ -334,17 +342,25 @@ def completion(gpu_id: int):
                 'message': gpu_status["error"]
             }), 400
         
-        if not gpu_status.get("gpu_available", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'GPU {gpu_id} n\'est pas disponible.'
-            }), 404
-        
-        if not gpu_status.get("model_loaded", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
-            }), 404
+        # Vérification spécifique pour multi-GPU
+        if gpu_id == -1:
+            if not gpu_status.get("model_loaded", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Aucun modèle multi-GPU chargé. Chargez un modèle avec POST /models/load-multi-gpu/{model_name} d\'abord.'
+                }), 404
+        else:
+            if not gpu_status.get("gpu_available", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'GPU {gpu_id} n\'est pas disponible.'
+                }), 404
+            
+            if not gpu_status.get("model_loaded", False):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
+                }), 404
         
         model_name = gpu_status.get("model_name", "unknown")
         

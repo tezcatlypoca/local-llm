@@ -54,6 +54,13 @@ class LLMManager:
             1: torch.device("cuda:1" if torch.cuda.is_available() and self.num_gpus > 1 else "cpu")
         }
         
+        # Support pour modèles multi-GPU (répartis sur les 2 GPUs)
+        # Utilise l'ID spécial -1 pour identifier un modèle multi-GPU
+        self.multi_gpu_model: Optional[Any] = None
+        self.multi_gpu_tokenizer: Optional[Any] = None
+        self.multi_gpu_model_name: Optional[str] = None
+        self.multi_gpu_access_token: Optional[str] = None
+        
     def _setup_miopen_cache(self, cache_size: int):
         """Configure le cache MIOpen pour ROCm."""
         os.environ["MIOPEN_USER_DB_PATH"] = os.path.expanduser("~/.cache/miopen")
@@ -77,6 +84,11 @@ class LLMManager:
         """
         if gpu_id not in [0, 1]:
             logger.error(f"GPU ID invalide: {gpu_id}. Doit être 0 ou 1.")
+            return False, None
+        
+        # Vérifier qu'un modèle multi-GPU n'est pas déjà chargé
+        if self.multi_gpu_model is not None:
+            logger.warning("Un modèle multi-GPU est déjà chargé. Déchargez-le d'abord pour charger un modèle sur un GPU individuel.")
             return False, None
         
         if self.models[gpu_id] is not None:
@@ -241,6 +253,188 @@ class LLMManager:
             logger.error(f"Erreur lors du déchargement du modèle: {str(e)}", exc_info=True)
             return False, f"Erreur lors du déchargement: {str(e)}"
     
+    def load_model_multi_gpu(self, model_name: str, **model_kwargs) -> tuple[bool, Optional[str]]:
+        """
+        Charge un modèle LLM réparti sur les 2 GPUs (multi-GPU).
+        Utile pour charger des modèles plus grands que la mémoire d'un seul GPU.
+        
+        Args:
+            model_name: Nom ou chemin du modèle Hugging Face
+            **model_kwargs: Arguments additionnels pour le chargement du modèle
+                (ex: dtype, attn_implementation, max_memory, etc.)
+        
+        Returns:
+            (success: bool, access_token: Optional[str]) - True et le token si succès, False et None sinon
+        """
+        # Vérifier qu'on a au moins 2 GPUs disponibles
+        if self.num_gpus < 2:
+            logger.error(f"Multi-GPU nécessite au moins 2 GPUs, seulement {self.num_gpus} détecté(s).")
+            return False, None
+        
+        # Vérifier qu'aucun modèle n'est déjà chargé
+        if self.models[0] is not None or self.models[1] is not None:
+            logger.warning("Des modèles sont déjà chargés sur les GPUs individuels. Déchargez-les d'abord pour utiliser multi-GPU.")
+            return False, None
+        
+        # Vérifier qu'un modèle multi-GPU n'est pas déjà chargé
+        if self.multi_gpu_model is not None:
+            logger.warning("Un modèle multi-GPU est déjà chargé. Déchargez-le d'abord.")
+            return False, None
+        
+        logger.info(f"Chargement du modèle '{model_name}' en mode multi-GPU (répartition sur GPU 0 et GPU 1)...")
+        
+        try:
+            # Chargement du tokenizer
+            logger.info(f"Chargement du tokenizer pour '{model_name}'...")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            
+            # Configuration spécifique pour les modèles Qwen
+            model_name_lower = model_name.lower()
+            if "qwen" in model_name_lower:
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                if hasattr(tokenizer, 'im_end_id') and tokenizer.im_end_id is not None:
+                    logger.debug(f"Qwen tokenizer configuré avec im_end_id: {tokenizer.im_end_id}")
+                logger.info(f"Tokenizer Qwen configuré - pad_token: {tokenizer.pad_token}, eos_token: {tokenizer.eos_token}")
+            elif tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            
+            # Configuration pour le chargement multi-GPU
+            load_kwargs = {
+                "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+                **model_kwargs
+            }
+            
+            # Configuration du device_map pour répartir sur les 2 GPUs
+            # Si device_map n'est pas fourni, utiliser "auto" qui répartit automatiquement
+            if "device_map" not in model_kwargs:
+                # "auto" répartit automatiquement les couches sur les GPUs disponibles
+                # On peut aussi spécifier manuellement avec un dict: {0: "8GiB", 1: "8GiB"}
+                load_kwargs["device_map"] = "auto"
+                logger.info("Utilisation de device_map='auto' pour répartir automatiquement sur les GPUs")
+                
+                # Optionnel: limiter la mémoire par GPU (en Go)
+                # Pour Vega 64 (8Go), on peut allouer environ 7.5Go par GPU pour laisser de la marge
+                if "max_memory" not in model_kwargs:
+                    max_memory = {0: "7.5GiB", 1: "7.5GiB"}
+                    load_kwargs["max_memory"] = max_memory
+                    logger.info(f"Limite de mémoire configurée: {max_memory}")
+            
+            # Désactiver SDPA attention pour ROCm multi-GPU
+            if "attn_implementation" not in model_kwargs and torch.cuda.is_available():
+                if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                    load_kwargs["attn_implementation"] = "eager"
+                    logger.info("SDPA attention désactivée pour ROCm multi-GPU (utilisation du backend 'eager')")
+            
+            # Activer low_cpu_mem_usage pour économiser la RAM système
+            load_kwargs["low_cpu_mem_usage"] = True
+            
+            # Chargement du modèle avec répartition multi-GPU
+            logger.info("Chargement du modèle avec répartition automatique sur les 2 GPUs...")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                **load_kwargs
+            )
+            
+            # Le modèle est maintenant réparti sur les GPUs via device_map
+            model.eval()
+            
+            # Stockage
+            self.multi_gpu_model = model
+            self.multi_gpu_tokenizer = tokenizer
+            self.multi_gpu_model_name = model_name
+            
+            # Génération d'un token d'accès unique
+            access_token = secrets.token_urlsafe(32)
+            self.multi_gpu_access_token = access_token
+            
+            logger.info(f"Modèle '{model_name}' chargé avec succès en mode multi-GPU (GPU 0 + GPU 1)")
+            logger.debug(f"Token d'accès généré pour modèle multi-GPU: {access_token[:16]}...")
+            
+            # Afficher la répartition du modèle
+            if hasattr(model, 'hf_device_map'):
+                logger.info(f"Répartition du modèle: {model.hf_device_map}")
+            
+            # Vérifier où sont placés les paramètres
+            param_devices = set()
+            for name, param in model.named_parameters():
+                if param.device.type == 'cuda':
+                    param_devices.add(str(param.device))
+            logger.info(f"Paramètres du modèle sur les devices: {sorted(param_devices)}")
+            
+            return True, access_token
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Erreur lors du chargement multi-GPU du modèle '{model_name}': {error_msg}", exc_info=True)
+            
+            # Détection d'erreurs communes
+            if "out of memory" in error_msg.lower() or "CUDA out of memory" in error_msg:
+                logger.error("Mémoire GPU insuffisante même en mode multi-GPU - le modèle est trop grand pour 2x8Go.")
+            elif "GGUF" in error_msg or ".gguf" in error_msg.lower():
+                logger.error("Modèle GGUF détecté - incompatible avec transformers.")
+            
+            # Nettoyage en cas d'erreur
+            self.multi_gpu_model = None
+            self.multi_gpu_tokenizer = None
+            self.multi_gpu_model_name = None
+            self.multi_gpu_access_token = None
+            return False, None
+    
+    def unload_model_multi_gpu(self, access_token: Optional[str] = None) -> tuple[bool, str]:
+        """
+        Décharge un modèle multi-GPU et nettoie la mémoire des 2 GPUs.
+        
+        Args:
+            access_token: Token d'accès requis pour décharger le modèle
+        
+        Returns:
+            (success: bool, message: str) - True et message de succès, ou False et message d'erreur
+        """
+        if self.multi_gpu_model is None:
+            return False, "Aucun modèle multi-GPU chargé."
+        
+        # Vérification du token d'accès
+        if access_token is None:
+            return False, "Token d'accès requis pour décharger le modèle multi-GPU."
+        
+        if self.multi_gpu_access_token is None:
+            return False, "Aucun token d'accès associé au modèle multi-GPU."
+        
+        if self.multi_gpu_access_token != access_token:
+            logger.warning("Tentative de déchargement multi-GPU avec un token invalide")
+            return False, "Token d'accès invalide. Vous n'avez pas les permissions pour décharger ce modèle."
+        
+        model_name = self.multi_gpu_model_name
+        logger.info(f"Déchargement du modèle multi-GPU '{model_name}'...")
+        
+        try:
+            # Suppression du modèle et du tokenizer
+            del self.multi_gpu_model
+            del self.multi_gpu_tokenizer
+            self.multi_gpu_model = None
+            self.multi_gpu_tokenizer = None
+            self.multi_gpu_model_name = None
+            self.multi_gpu_access_token = None
+            
+            # Nettoyage de la mémoire Python
+            gc.collect()
+            
+            # Nettoyage de la mémoire des 2 GPUs
+            if torch.cuda.is_available():
+                for gpu_id in [0, 1]:
+                    if gpu_id < self.num_gpus:
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize(device=self.devices[gpu_id])
+                logger.info("Mémoire GPU 0 et GPU 1 libérée.")
+            
+            logger.info(f"Modèle multi-GPU '{model_name}' déchargé avec succès.")
+            return True, f"Modèle multi-GPU '{model_name}' déchargé avec succès."
+            
+        except Exception as e:
+            logger.error(f"Erreur lors du déchargement du modèle multi-GPU: {str(e)}", exc_info=True)
+            return False, f"Erreur lors du déchargement: {str(e)}"
+    
     def generate(
         self,
         prompt: str,
@@ -257,7 +451,7 @@ class LLMManager:
         
         Args:
             prompt: Texte d'entrée (prompt)
-            gpu_id: ID du GPU (0 ou 1) à utiliser pour l'inférence
+            gpu_id: ID du GPU (0, 1, ou -1 pour modèle multi-GPU) à utiliser pour l'inférence
             max_length: Longueur maximale totale (prompt + génération)
             max_new_tokens: Nombre maximum de nouveaux tokens à générer (prioritaire sur max_length)
             temperature: Température pour la génération (0.0-1.0)
@@ -268,21 +462,35 @@ class LLMManager:
         Returns:
             Texte généré ou None en cas d'erreur
         """
-        if gpu_id not in [0, 1]:
-            logger.error(f"GPU ID invalide: {gpu_id}. Doit être 0 ou 1.")
-            return None
+        # Vérifier si on utilise le modèle multi-GPU
+        use_multi_gpu = (gpu_id == -1)
         
-        if self.models[gpu_id] is None:
-            logger.error(f"Aucun modèle chargé sur GPU {gpu_id}.")
-            return None
-        
-        model = self.models[gpu_id]
-        tokenizer = self.tokenizers[gpu_id]
-        device = self.devices[gpu_id]
+        if use_multi_gpu:
+            if self.multi_gpu_model is None:
+                logger.error("Aucun modèle multi-GPU chargé. Utilisez load_model_multi_gpu() d'abord.")
+                return None
+            model = self.multi_gpu_model
+            tokenizer = self.multi_gpu_tokenizer
+            model_name = self.multi_gpu_model_name
+            # Pour multi-GPU, les inputs seront automatiquement gérés par le device_map
+            device = None  # Pas de device unique pour multi-GPU
+        else:
+            if gpu_id not in [0, 1]:
+                logger.error(f"GPU ID invalide: {gpu_id}. Doit être 0, 1, ou -1 (multi-GPU).")
+                return None
+            
+            if self.models[gpu_id] is None:
+                logger.error(f"Aucun modèle chargé sur GPU {gpu_id}.")
+                return None
+            
+            model = self.models[gpu_id]
+            tokenizer = self.tokenizers[gpu_id]
+            device = self.devices[gpu_id]
+            model_name = self.model_names[gpu_id]
         
         try:
             # Détection du type de modèle pour un traitement spécifique
-            model_name_lower = self.model_names[gpu_id].lower() if self.model_names[gpu_id] else ""
+            model_name_lower = model_name.lower() if model_name else ""
             is_qwen = "qwen" in model_name_lower
             use_chat_template = False
             formatted_prompt = prompt
@@ -314,9 +522,9 @@ class LLMManager:
                             add_generation_prompt=True
                         )
                     use_chat_template = True
-                    logger.debug(f"Prompt formaté avec apply_chat_template (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
+                    logger.debug(f"Prompt formaté avec apply_chat_template (modèle: {model_name}): {formatted_prompt[:200]}...")
                 except Exception as e:
-                    logger.warning(f"Erreur avec apply_chat_template pour {self.model_names[gpu_id]}, utilisation du prompt brut: {e}", exc_info=True)
+                    logger.warning(f"Erreur avec apply_chat_template pour {model_name}, utilisation du prompt brut: {e}", exc_info=True)
                     # Fallback : utiliser le prompt tel quel
                     formatted_prompt = prompt
                     use_chat_template = False
@@ -334,7 +542,12 @@ class LLMManager:
                 tokenizer.pad_token = tokenizer.eos_token
                 logger.debug("Token de padding configuré pour Qwen (utilise eos_token)")
             
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            # Pour multi-GPU, placer les inputs sur le premier GPU (cuda:0)
+            # Le modèle gérera automatiquement la répartition via device_map
+            if use_multi_gpu:
+                inputs = {k: v.to("cuda:0") for k, v in inputs.items()}
+            else:
+                inputs = {k: v.to(device) for k, v in inputs.items()}
             
             # Génération
             with torch.no_grad():
@@ -368,13 +581,14 @@ class LLMManager:
                     logger.debug(f"Température ajustée de {temperature} à {safe_temperature} pour éviter les problèmes numériques")
                 
                 try:
-                    logger.debug(f"Début génération - input_ids shape: {inputs['input_ids'].shape}, device: {device}")
+                    device_info = "multi-GPU" if use_multi_gpu else str(device)
+                    logger.debug(f"Début génération - input_ids shape: {inputs['input_ids'].shape}, device: {device_info}")
                     outputs = model.generate(**inputs, **generation_config)
                     logger.debug(f"Génération terminée - outputs shape: {outputs.shape}")
                 except RuntimeError as e:
                     # Gestion spécifique de l'erreur de probabilités invalides
                     error_msg = str(e)
-                    logger.error(f"RuntimeError lors de la génération pour {self.model_names[gpu_id]}: {error_msg}")
+                    logger.error(f"RuntimeError lors de la génération pour {model_name}: {error_msg}")
                     if "probability tensor" in error_msg.lower() or "nan" in error_msg.lower() or "inf" in error_msg.lower():
                         logger.warning(f"Erreur de probabilités invalides détectée: {error_msg}")
                         # Réessayer avec des paramètres plus stables
@@ -400,7 +614,7 @@ class LLMManager:
             
             # Vérifier qu'on a bien généré de nouveaux tokens
             if output_length <= input_length:
-                logger.warning(f"Aucun nouveau token généré pour {self.model_names[gpu_id]} - output_length={output_length}, input_length={input_length}")
+                logger.warning(f"Aucun nouveau token généré pour {model_name} - output_length={output_length}, input_length={input_length}")
                 return ""
             
             generated_ids = outputs[0][input_length:]
@@ -465,14 +679,26 @@ class LLMManager:
         Retourne le statut des modèles chargés.
         
         Args:
-            gpu_id: ID du GPU spécifique (None pour tous les GPUs)
+            gpu_id: ID du GPU spécifique (None pour tous les GPUs, -1 pour multi-GPU)
         
         Returns:
             Dictionnaire avec les informations sur les modèles
         """
+        # Statut pour modèle multi-GPU
+        if gpu_id == -1:
+            return {
+                "gpu_id": -1,
+                "is_multi_gpu": True,
+                "model_loaded": self.multi_gpu_model is not None,
+                "model_name": self.multi_gpu_model_name,
+                "devices": ["cuda:0", "cuda:1"] if self.num_gpus >= 2 else [],
+                "has_access_token": self.multi_gpu_access_token is not None,
+                "gpus_used": [0, 1] if self.multi_gpu_model is not None and self.num_gpus >= 2 else []
+            }
+        
         if gpu_id is not None:
             if gpu_id not in [0, 1]:
-                return {"error": f"GPU ID invalide: {gpu_id}"}
+                return {"error": f"GPU ID invalide: {gpu_id}. Utilisez -1 pour multi-GPU."}
             
             return {
                 "gpu_id": gpu_id,
@@ -482,10 +708,16 @@ class LLMManager:
                 "gpu_available": gpu_id < self.num_gpus
             }
         
-        # Statut de tous les GPUs
+        # Statut de tous les GPUs + multi-GPU
         status = {
             "total_gpus": self.num_gpus,
-            "gpus": {}
+            "gpus": {},
+            "multi_gpu": {
+                "model_loaded": self.multi_gpu_model is not None,
+                "model_name": self.multi_gpu_model_name,
+                "devices": ["cuda:0", "cuda:1"] if self.num_gpus >= 2 else [],
+                "has_access_token": self.multi_gpu_access_token is not None
+            }
         }
         
         for gpu_id in [0, 1]:
@@ -509,6 +741,25 @@ class LLMManager:
                     "total_gb": round(memory_total, 2),
                     "free_gb": round(memory_total - memory_reserved, 2)
                 }
+        
+        # Ajouter les informations mémoire pour le modèle multi-GPU
+        if self.multi_gpu_model is not None and torch.cuda.is_available():
+            status["multi_gpu"]["memory"] = {}
+            for gpu_id in [0, 1]:
+                if gpu_id < self.num_gpus:
+                    memory_allocated = torch.cuda.memory_allocated(gpu_id) / 1024**3
+                    memory_reserved = torch.cuda.memory_reserved(gpu_id) / 1024**3
+                    memory_total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+                    status["multi_gpu"]["memory"][f"gpu_{gpu_id}"] = {
+                        "allocated_gb": round(memory_allocated, 2),
+                        "reserved_gb": round(memory_reserved, 2),
+                        "total_gb": round(memory_total, 2),
+                        "free_gb": round(memory_total - memory_reserved, 2)
+                    }
+            
+            # Afficher la répartition si disponible
+            if hasattr(self.multi_gpu_model, 'hf_device_map'):
+                status["multi_gpu"]["device_map"] = self.multi_gpu_model.hf_device_map
         
         return status
     

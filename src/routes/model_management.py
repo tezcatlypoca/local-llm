@@ -222,3 +222,127 @@ def unload_model(gpu_id: int):
             'status': 'error',
             'message': f'Erreur serveur: {str(e)}'
         }), 500
+
+
+@model_management_bp.route('/models/load-multi-gpu/<path:model_name>', methods=['POST'])
+def load_model_multi_gpu(model_name: str):
+    """Charge un modèle réparti sur les 2 GPUs (multi-GPU). Utile pour les modèles >8Go."""
+    try:
+        manager = get_llm_manager()
+
+        # Vérifier qu'on a au moins 2 GPUs
+        if manager.num_gpus < 2:
+            return jsonify({
+                'status': 'error',
+                'message': 'Le mode multi-GPU nécessite au moins 2 GPUs disponibles.',
+                'gpus_detected': manager.num_gpus
+            }), 503
+
+        # Vérifier que le modèle existe
+        model_exists, model_path = _check_model_exists(model_name)
+        if not model_exists:
+            return jsonify({
+                'status': 'error',
+                'message': f'Le modèle "{model_name}" n\'existe pas localement ou sur Hugging Face Hub.'
+            }), 404
+
+        # Récupérer les données JSON
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
+        model_kwargs = request_data.get('model_kwargs', {})
+
+        # Vérifier si c'est un modèle GGUF (incompatible avec transformers)
+        model_name_lower = model_name.lower()
+        if '.gguf' in model_name_lower or 'gguf' in model_name_lower:
+            return jsonify({
+                'status': 'error',
+                'message': f'Le modèle "{model_name}" est au format GGUF, incompatible avec cette API.',
+                'details': 'Les modèles GGUF nécessitent llama.cpp ou d\'autres loaders spécialisés.'
+            }), 400
+
+        logger.info(f"Chargement du modèle '{model_name}' en mode multi-GPU...")
+        success, access_token = manager.load_model_multi_gpu(model_name, **model_kwargs)
+
+        if success:
+            multi_gpu_status = manager.get_model_status(gpu_id=-1)
+
+            return jsonify({
+                'status': 'success',
+                'message': f'Modèle "{model_name}" chargé avec succès en mode multi-GPU (GPU 0 + GPU 1)',
+                'gpu_id': -1,
+                'gpu_identifier': 'MULTI-GPU',
+                'model_name': model_name,
+                'model_path': model_path,
+                'access_token': access_token,
+                'note': 'Conservez ce token pour décharger le modèle plus tard. Utilisez gpu_id=-1 pour générer.',
+                'multi_gpu_status': multi_gpu_status
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Erreur lors du chargement multi-GPU du modèle "{model_name}"',
+                'details': 'Vérifiez les logs du serveur pour plus d\'informations.',
+                'tips': [
+                    'Assurez-vous qu\'aucun modèle n\'est chargé sur les GPUs individuels',
+                    'Le modèle doit être compatible avec transformers (format .bin, .safetensors)',
+                    'Vérifiez que vous avez suffisamment de mémoire GPU (modèles jusqu\'à ~15Go avec 2x8Go)',
+                    'Les modèles très grands (>15Go) ne rentreront peut-être pas même en multi-GPU'
+                ]
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Erreur lors du chargement multi-GPU du modèle: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Erreur serveur: {str(e)}'
+        }), 500
+
+
+@model_management_bp.route('/models/unload-multi-gpu', methods=['POST'])
+def unload_model_multi_gpu():
+    """Décharge un modèle multi-GPU des 2 GPUs."""
+    try:
+        manager = get_llm_manager()
+
+        # Récupérer les données JSON
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
+        access_token = request_data.get('access_token')
+
+        if not access_token:
+            return jsonify({
+                'status': 'error',
+                'message': "Token d'accès requis. Fournissez le token reçu lors du chargement du modèle (access_token)."
+            }), 400
+
+        logger.info("Tentative de déchargement du modèle multi-GPU...")
+        success, message = manager.unload_model_multi_gpu(access_token=access_token)
+
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': message,
+                'gpu_identifier': 'MULTI-GPU'
+            }), 200
+        else:
+            status_code = 400
+            if "Token d'accès invalide" in message or "Token d'accès requis" in message:
+                status_code = 403
+            elif "Aucun modèle multi-GPU chargé" in message:
+                status_code = 404
+
+            return jsonify({
+                'status': 'error',
+                'message': message
+            }), status_code
+
+    except Exception as e:
+        logger.error(f"Erreur lors du déchargement multi-GPU du modèle: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Erreur serveur: {str(e)}'
+        }), 500
