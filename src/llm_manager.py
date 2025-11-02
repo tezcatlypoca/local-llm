@@ -285,14 +285,20 @@ class LLMManager:
             # Détection du type de modèle pour un traitement spécifique
             model_name_lower = self.model_names[gpu_id].lower() if self.model_names[gpu_id] else ""
             is_qwen = "qwen" in model_name_lower
-            is_instruct_model = any(keyword in model_name_lower for keyword in ["instruct", "chat", "assistant", "alpaca", "vicuna"])
-            is_base_model = not is_instruct_model and any(keyword in model_name_lower for keyword in ["gpt2", "gpt-neo", "gpt-j"])
             
             use_chat_template = False
             formatted_prompt = prompt
             original_prompt = prompt  # Conserver le prompt original pour le décodage
             
-            # Pour les modèles de base (comme GPT2), formater le prompt pour qu'il ressemble à une question/réponse
+            # Vérifier si le tokenizer a apply_chat_template (priorité absolue)
+            has_chat_template = hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None))
+            
+            # Détection des modèles de base uniquement si PAS de chat_template
+            # Les modèles avec chat_template doivent utiliser leur template, pas notre formatage custom
+            is_instruct_model = any(keyword in model_name_lower for keyword in ["instruct", "chat", "assistant", "alpaca", "vicuna"])
+            is_base_model = not has_chat_template and not is_instruct_model and any(keyword in model_name_lower for keyword in ["gpt2", "gpt-neo", "gpt-j"])
+            
+            # Pour les modèles de base (comme GPT2) SANS chat_template, formater le prompt pour qu'il ressemble à une question/réponse
             # Les modèles de base ne comprennent pas les instructions, il faut leur donner un contexte
             if is_base_model:
                 # Convertir les messages en format question/réponse simple pour les modèles de base
@@ -315,7 +321,7 @@ class LLMManager:
                 logger.debug(f"Prompt formaté pour modèle de base: {formatted_prompt[:200]}...")
             # Pour les modèles de chat, essayer d'utiliser apply_chat_template si disponible
             # Cela formate correctement les prompts pour les modèles conversationnels
-            elif hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
+            elif has_chat_template:
                 try:
                     # Priorité: utiliser structured_messages si fourni (depuis /chat avec rôles)
                     if structured_messages and isinstance(structured_messages, list) and len(structured_messages) > 0:
@@ -326,7 +332,7 @@ class LLMManager:
                             add_generation_prompt=True
                         )
                         use_chat_template = True
-                        logger.debug(f"Prompt formaté avec apply_chat_template depuis structured_messages (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
+                        logger.info(f"Prompt formaté avec apply_chat_template depuis structured_messages (modèle: {self.model_names[gpu_id]}):\n{formatted_prompt}")
                     else:
                         # Fallback: parser le prompt simple
                         # Si le prompt contient plusieurs lignes (messages séparés), essayer de les parser
