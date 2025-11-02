@@ -336,11 +336,13 @@ class LLMManager:
             
             # Logging supplémentaire pour le débogage
             if is_qwen:
-                logger.debug(f"Traitement Qwen - use_chat_template: {use_chat_template}, prompt_length: {len(prompt)}, formatted_length: {len(formatted_prompt)}")
+                logger.info(f"Traitement Qwen - use_chat_template: {use_chat_template}, prompt_length: {len(prompt)}, formatted_length: {len(formatted_prompt)}")
+                logger.info(f"Prompt formaté complet pour Qwen:\n{formatted_prompt}")
             
             # Tokenisation : pas de padding nécessaire pour une seule séquence de génération
             # Le padding est seulement utile pour le traitement par batch
             inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=False, truncation=True)
+            logger.info(f"Input tokenisés - shape: {inputs['input_ids'].shape}, nombre de tokens: {inputs['input_ids'].shape[1]}")
             
             # Pour Qwen, s'assurer que le tokenizer a les bons paramètres
             if is_qwen and tokenizer.pad_token is None:
@@ -472,8 +474,15 @@ class LLMManager:
             
             # Décoder les nouveaux tokens uniquement
             generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
-            logger.info(f"Texte décodé brut (premiers 500 chars): {generated_text[:500]}")
-            logger.debug(f"Texte décodé complet (longueur: {len(generated_text)}): {generated_text}")
+            logger.info(f"Texte décodé brut (longueur: {len(generated_text)}, premiers 500 chars): {generated_text[:500]}")
+            logger.info(f"Texte décodé brut complet:\n{generated_text}")
+            
+            # Vérifier si la réponse contient uniquement des caractères répétitifs (signe de problème)
+            if generated_text.strip():
+                unique_chars = set(generated_text.strip())
+                if len(unique_chars) == 1 and len(generated_text.strip()) > 10:
+                    logger.warning(f"Réponse suspecte détectée: uniquement le caractère '{generated_text.strip()[0]}' répété {len(generated_text.strip())} fois")
+                    logger.warning("Cela peut indiquer un problème avec le prompt formaté ou les paramètres de génération")
             
             # Nettoyer la réponse : retirer les tokens spéciaux de fin de conversation pour les modèles de chat
             # Tokens spéciaux spécifiques à Qwen et autres modèles
