@@ -285,13 +285,37 @@ class LLMManager:
             # Détection du type de modèle pour un traitement spécifique
             model_name_lower = self.model_names[gpu_id].lower() if self.model_names[gpu_id] else ""
             is_qwen = "qwen" in model_name_lower
+            is_instruct_model = any(keyword in model_name_lower for keyword in ["instruct", "chat", "assistant", "alpaca", "vicuna"])
+            is_base_model = not is_instruct_model and any(keyword in model_name_lower for keyword in ["gpt2", "gpt-neo", "gpt-j"])
+            
             use_chat_template = False
             formatted_prompt = prompt
             original_prompt = prompt  # Conserver le prompt original pour le décodage
             
+            # Pour les modèles de base (comme GPT2), formater le prompt pour qu'il ressemble à une question/réponse
+            # Les modèles de base ne comprennent pas les instructions, il faut leur donner un contexte
+            if is_base_model:
+                # Convertir les messages en format question/réponse simple pour les modèles de base
+                logger.info(f"Détection d'un modèle de base ({self.model_names[gpu_id]}) - formatage spécial du prompt")
+                if structured_messages:
+                    prompt_parts = []
+                    for msg in structured_messages:
+                        role = msg.get("role", "user")
+                        content = msg.get("content", "")
+                        if role == "user":
+                            prompt_parts.append(f"Question: {content}")
+                        elif role == "assistant":
+                            prompt_parts.append(f"Answer: {content}")
+                        else:
+                            prompt_parts.append(content)
+                    formatted_prompt = "\n".join(prompt_parts) + "\nAnswer:"
+                else:
+                    # Pas de messages structurés, formater le prompt simple comme une question
+                    formatted_prompt = f"Question: {prompt.strip()}\nAnswer:"
+                logger.debug(f"Prompt formaté pour modèle de base: {formatted_prompt[:200]}...")
             # Pour les modèles de chat, essayer d'utiliser apply_chat_template si disponible
             # Cela formate correctement les prompts pour les modèles conversationnels
-            if hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
+            elif hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None)):
                 try:
                     # Priorité: utiliser structured_messages si fourni (depuis /chat avec rôles)
                     if structured_messages and isinstance(structured_messages, list) and len(structured_messages) > 0:
