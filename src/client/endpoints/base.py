@@ -123,6 +123,7 @@ class BaseEndpoint:
         path: str, 
         json: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -132,20 +133,24 @@ class BaseEndpoint:
             path: Chemin de l'endpoint (ex: "/models/load/gpt2", "/chat/0")
             json: Données JSON à envoyer (sera sérialisées en JSON)
             data: Données à envoyer (alternative à json)
+            timeout: Timeout personnalisé en secondes (si None, utilise le timeout du client)
             **kwargs: Arguments additionnels à passer à requests.post()
         
         Returns:
             Dictionnaire contenant les données JSON de la réponse
         """
         url = self._build_url(path)
-        logger.debug(f"POST {url} (json: {json is not None}, data: {data is not None})")
+        logger.debug(f"POST {url} (json: {json is not None}, data: {data is not None}, timeout: {timeout or self.client.timeout})")
+        
+        # Utiliser le timeout personnalisé si fourni, sinon celui du client
+        request_timeout = timeout if timeout is not None else self.client.timeout
         
         try:
             response = self.session.post(
                 url,
                 json=json,
                 data=data,
-                timeout=self.client.timeout,
+                timeout=request_timeout,
                 **kwargs
             )
             return self._handle_response(response)

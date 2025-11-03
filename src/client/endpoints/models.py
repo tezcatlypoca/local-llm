@@ -36,7 +36,8 @@ class ModelsEndpoint(BaseEndpoint):
     def load_model(
         self, 
         model_name: str, 
-        model_kwargs: Optional[Dict[str, Any]] = None
+        model_kwargs: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Charge un modèle LLM sur un GPU libre.
@@ -46,6 +47,9 @@ class ModelsEndpoint(BaseEndpoint):
                        (ex: "gpt2", "microsoft/phi-2")
             model_kwargs: Arguments optionnels pour le chargement du modèle
                          (ex: {"torch_dtype": "float16"})
+            timeout: Timeout personnalisé en secondes pour cette requête
+                    (défaut: 600 secondes = 10 minutes, car le chargement peut être long)
+                    Si None, utilise 600s. Pour un timeout plus long, spécifiez une valeur.
         
         Returns:
             Dictionnaire contenant:
@@ -63,14 +67,23 @@ class ModelsEndpoint(BaseEndpoint):
         Raises:
             requests.HTTPError: Si l'API retourne une erreur (404 si modèle introuvable, 
                                503 si aucun GPU libre)
-            requests.RequestException: Si la requête échoue
+            requests.RequestException: Si la requête échoue (timeout, connexion, etc.)
+        
+        Note:
+            Le chargement de modèles peut prendre plusieurs minutes, surtout pour les
+            grands modèles ou lors du premier téléchargement. Un timeout de 10 minutes
+            est utilisé par défaut.
         """
         path = f"/models/load/{model_name}"
         json_data = {}
         if model_kwargs:
             json_data["model_kwargs"] = model_kwargs
         
-        return self.post(path, json=json_data if json_data else None)
+        # Timeout par défaut de 10 minutes (600 secondes) pour le chargement de modèles
+        # Les autres requêtes utilisent le timeout du client (60s par défaut)
+        request_timeout = timeout if timeout is not None else 350
+        
+        return self.post(path, json=json_data if json_data else None, timeout=request_timeout)
     
     def unload_model(self, gpu_id: int, access_token: str) -> Dict[str, Any]:
         """
