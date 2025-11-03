@@ -23,12 +23,30 @@ except ImportError:
     sys.exit(1)
 
 # Essayer d'importer BitsAndBytes pour la quantisation (optionnel)
-try:
-    import bitsandbytes as bnb
-    from transformers import BitsAndBytesConfig
-    BITSANDBYTES_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    BITSANDBYTES_AVAILABLE = False
+# Note: BitsAndBytes n'est PAS compatible avec ROCm/AMD, seulement CUDA/NVIDIA
+BITSANDBYTES_AVAILABLE = False
+BITSANDBYTES_CONFIG = None
+
+# Détecter si on est sur ROCm (AMD) ou CUDA (NVIDIA)
+IS_ROCM = False
+if torch is not None:
+    try:
+        # Sur ROCm, torch.version.hip existe et n'est pas None
+        IS_ROCM = hasattr(torch.version, 'hip') and torch.version.hip is not None
+    except:
+        pass
+
+# Si on n'est pas sur ROCm, on peut essayer d'importer bitsandbytes
+if not IS_ROCM:
+    try:
+        import bitsandbytes as bnb
+        from transformers import BitsAndBytesConfig
+        BITSANDBYTES_AVAILABLE = True
+        BITSANDBYTES_CONFIG = BitsAndBytesConfig
+    except (ImportError, ModuleNotFoundError, Exception) as e:
+        # L'import peut échouer pour diverses raisons
+        BITSANDBYTES_AVAILABLE = False
+        BITSANDBYTES_CONFIG = None
 
 
 def download_model(model_name: str = "gpt2", use_quantization: bool = False):
@@ -59,19 +77,30 @@ def download_model(model_name: str = "gpt2", use_quantization: bool = False):
         # Configuration de la quantisation si demandée et disponible
         load_kwargs = {}
         if use_quantization and BITSANDBYTES_AVAILABLE and not is_classification_model:
-            print("   📊 Utilisation de la quantisation 4-bit (BitsAndBytes)...")
-            # Utiliser torch.float16 si disponible, sinon "float16" (string)
-            compute_dtype = torch.float16 if torch is not None else "float16"
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=compute_dtype,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_use_double_quant=True,
-            )
-            load_kwargs["quantization_config"] = quantization_config
-            load_kwargs["device_map"] = "auto"
+            try:
+                print("   📊 Utilisation de la quantisation 4-bit (BitsAndBytes)...")
+                # Utiliser torch.float16 si disponible, sinon "float16" (string)
+                compute_dtype = torch.float16 if torch is not None else "float16"
+                quantization_config = BITSANDBYTES_CONFIG(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                load_kwargs["quantization_config"] = quantization_config
+                load_kwargs["device_map"] = "auto"
+            except Exception as e:
+                print(f"   ⚠️  Erreur lors de la configuration de BitsAndBytes: {e}")
+                if IS_ROCM:
+                    print("   ℹ️  BitsAndBytes n'est pas compatible avec ROCm/AMD")
+                print("   📥 Téléchargement en full precision...")
+                use_quantization = False  # Désactiver pour éviter d'autres erreurs
         elif use_quantization and not BITSANDBYTES_AVAILABLE:
-            print("   ⚠️  BitsAndBytes non disponible. Installation: pip install bitsandbytes")
+            if IS_ROCM:
+                print("   ⚠️  BitsAndBytes n'est pas compatible avec ROCm/AMD")
+                print("   ℹ️  Pour ROCm, considérez d'utiliser des modèles pré-quantifiés (GPTQ/AWQ)")
+            else:
+                print("   ⚠️  BitsAndBytes non disponible. Installation: pip install bitsandbytes")
             print("   📥 Téléchargement en full precision...")
         
         # Sélectionner la classe de modèle appropriée
@@ -129,6 +158,12 @@ def main():
     print("=" * 60)
     print()
     
+    # Informer l'utilisateur si ROCm est détecté
+    if IS_ROCM:
+        print("ℹ️  ROCm détecté: bitsandbytes n'est pas compatible avec AMD/ROCm")
+        print("   La quantisation 4-bit via bitsandbytes sera désactivée.")
+        print("   Pour ROCm, considérez d'utiliser des modèles pré-quantifiés (GPTQ/AWQ).\n")
+    
     # Liste de modèles recommandés (du plus petit au plus grand)
     models = {
         "1": ("gpt2", "GPT2 - ~500 MB - Très rapide, bon pour les tests", False),
@@ -160,8 +195,13 @@ def main():
                 quant_choice = input("   Utiliser la quantisation 4-bit ? (O/n): ").strip().lower()
                 use_quantization = quant_choice != 'n'
             else:
-                print(f"   ⚠️  BitsAndBytes n'est pas installé. Installation: pip install bitsandbytes")
-                print(f"   📥 Téléchargement en full precision (nécessitera plus de 8 GB)...")
+                if IS_ROCM:
+                    print(f"   ⚠️  BitsAndBytes n'est pas compatible avec ROCm/AMD.")
+                    print(f"   ℹ️  Pour ROCm, utilisez des modèles pré-quantifiés (GPTQ/AWQ) ou téléchargez en full precision.")
+                    print(f"   📥 Téléchargement en full precision (nécessitera plus de 8 GB)...")
+                else:
+                    print(f"   ⚠️  BitsAndBytes n'est pas installé. Installation: pip install bitsandbytes")
+                    print(f"   📥 Téléchargement en full precision (nécessitera plus de 8 GB)...")
                 use_quantization = False
     elif choice:
         model_name = choice
@@ -171,6 +211,9 @@ def main():
             if BITSANDBYTES_AVAILABLE:
                 quant_choice = input("   Utiliser la quantisation 4-bit ? (O/n): ").strip().lower()
                 use_quantization = quant_choice != 'n'
+            elif IS_ROCM:
+                print(f"   ℹ️  BitsAndBytes n'est pas compatible avec ROCm/AMD.")
+                print(f"   Téléchargement en full precision (nécessitera plus de 8 GB)...")
     else:
         # Par défaut : Qwen2.5-1.5B-Instruct (recommandé pour 8GB)
         print("Utilisation du modèle par défaut recommandé: Qwen/Qwen2.5-1.5B-Instruct")
