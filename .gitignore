@@ -1,5 +1,6 @@
 *.ini
 /venv/
+/env_v2/
 .cursor/
 doc/
 __pycache__/

@@ -222,3 +222,74 @@ def unload_model(gpu_id: int):
             'status': 'error',
             'message': f'Erreur serveur: {str(e)}'
         }), 500
+
+
+@model_management_bp.route('/models/unload_all', methods=['POST'])
+def unload_all_models():
+    """Décharge tous les modèles de tous les GPUs. Requiert un mot de passe administrateur."""
+    try:
+        manager = get_llm_manager()
+
+        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
+        
+        admin_password = request_data.get('password')
+        
+        if not admin_password:
+            return jsonify({
+                'status': 'error',
+                'message': "Mot de passe administrateur requis. Fournissez le champ 'password' dans le body de la requête."
+            }), 400
+
+        logger.info(f"Tentative de déchargement forcé de tous les GPUs...")
+        results = manager.unload_all_models(admin_password=admin_password)
+
+        # Vérifier si le mot de passe était invalide (vérifier dans les deux GPUs au cas où)
+        invalid_password_msg = "Mot de passe administrateur invalide"
+        for gpu_key in ["gpu_0", "gpu_1"]:
+            if not results[gpu_key]["success"] and invalid_password_msg in results[gpu_key]["message"]:
+                return jsonify({
+                    'status': 'error',
+                    'message': results[gpu_key]["message"]
+                }), 403
+
+        # Compter les succès
+        success_count = sum(1 for gpu_result in results.values() if gpu_result["success"])
+        total_gpus = len(results)
+
+        # Préparer la réponse détaillée
+        response_data = {
+            'status': 'success' if success_count == total_gpus else 'partial',
+            'message': f'Déchargement terminé: {success_count}/{total_gpus} GPUs traités avec succès',
+            'results': {
+                'gpu_0': {
+                    'gpu_id': 0,
+                    'gpu_identifier': 'GPU-0',
+                    'success': results["gpu_0"]["success"],
+                    'message': results["gpu_0"]["message"]
+                },
+                'gpu_1': {
+                    'gpu_id': 1,
+                    'gpu_identifier': 'GPU-1',
+                    'success': results["gpu_1"]["success"],
+                    'message': results["gpu_1"]["message"]
+                }
+            }
+        }
+
+        status_code = 200
+        if success_count == 0:
+            response_data['status'] = 'error'
+            status_code = 500
+
+        return jsonify(response_data), status_code
+
+    except Exception as e:
+        logger.error(f"Erreur lors du déchargement de tous les modèles: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Erreur serveur: {str(e)}'
+        }), 500

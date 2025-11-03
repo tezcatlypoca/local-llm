@@ -241,6 +241,90 @@ class LLMManager:
             logger.error(f"Erreur lors du déchargement du modèle: {str(e)}", exc_info=True)
             return False, f"Erreur lors du déchargement: {str(e)}"
     
+    def unload_model_force(self, gpu_id: int, admin_password: str) -> tuple[bool, str]:
+        """
+        Décharge un modèle du GPU spécifié sans vérifier le token, uniquement avec le mot de passe admin.
+        Cette méthode est utilisée par la route d'administration pour forcer le déchargement.
+        
+        Args:
+            gpu_id: ID du GPU (0 ou 1) dont décharger le modèle
+            admin_password: Mot de passe administrateur requis pour forcer le déchargement
+        
+        Returns:
+            (success: bool, message: str) - True et message de succès, ou False et message d'erreur
+        """
+        ADMIN_PASSWORD = "admin69"
+        
+        if admin_password != ADMIN_PASSWORD:
+            logger.warning(f"Tentative de déchargement forcé avec un mot de passe invalide sur GPU {gpu_id}")
+            return False, "Mot de passe administrateur invalide."
+        
+        if gpu_id not in [0, 1]:
+            return False, f"GPU ID invalide: {gpu_id}. Doit être 0 ou 1."
+        
+        if self.models[gpu_id] is None:
+            return False, f"Aucun modèle chargé sur GPU {gpu_id}."
+        
+        model_name = self.model_names[gpu_id]
+        logger.info(f"Déchargement forcé (admin) du modèle '{model_name}' du GPU {gpu_id}...")
+        
+        try:
+            # Suppression du modèle et du tokenizer
+            del self.models[gpu_id]
+            del self.tokenizers[gpu_id]
+            self.models[gpu_id] = None
+            self.tokenizers[gpu_id] = None
+            self.model_names[gpu_id] = None
+            # Suppression du token d'accès
+            self.access_tokens[gpu_id] = None
+            
+            # Nettoyage de la mémoire Python
+            gc.collect()
+            
+            # Nettoyage de la mémoire GPU
+            if torch.cuda.is_available() and gpu_id < self.num_gpus:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize(device=self.devices[gpu_id])
+                logger.info(f"Mémoire GPU {gpu_id} libérée.")
+            
+            logger.info(f"Modèle '{model_name}' déchargé avec succès (admin).")
+            return True, f"Modèle '{model_name}' déchargé avec succès du GPU {gpu_id} (admin)."
+            
+        except Exception as e:
+            logger.error(f"Erreur lors du déchargement forcé du modèle: {str(e)}", exc_info=True)
+            return False, f"Erreur lors du déchargement: {str(e)}"
+    
+    def unload_all_models(self, admin_password: str) -> Dict[str, Any]:
+        """
+        Décharge tous les modèles de tous les GPUs en utilisant le mot de passe admin.
+        
+        Args:
+            admin_password: Mot de passe administrateur requis
+        
+        Returns:
+            Dictionnaire avec les résultats du déchargement pour chaque GPU
+        """
+        results = {
+            "gpu_0": {"success": False, "message": ""},
+            "gpu_1": {"success": False, "message": ""}
+        }
+        
+        # Décharger GPU 0
+        if self.models[0] is not None:
+            success, message = self.unload_model_force(0, admin_password)
+            results["gpu_0"] = {"success": success, "message": message}
+        else:
+            results["gpu_0"] = {"success": True, "message": "Aucun modèle chargé sur GPU 0."}
+        
+        # Décharger GPU 1
+        if self.models[1] is not None:
+            success, message = self.unload_model_force(1, admin_password)
+            results["gpu_1"] = {"success": success, "message": message}
+        else:
+            results["gpu_1"] = {"success": True, "message": "Aucun modèle chargé sur GPU 1."}
+        
+        return results
+    
     def generate(
         self,
         prompt: str,
