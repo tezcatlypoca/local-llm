@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+- Le projet est développé pour une machine sous Ubuntu linux avec 2 GPUs AMD Vega 64, cette machine on va l'appel: LBB
+- Tu peux lire dans le dossier doc/ les scripts, notamment 'test_run_model.py', qui ont été lancé sur LBB et qui fonctionnent
+- Tu devras implémenter le code en accords avec les version des librairies suivantes:
+    - Torch 2.2.0
+        - TorchVision 0.17
+        - Torchaudio 2.2.0
+    - ROCm 5.7
+    - numpy 1.26.4
+- Sur LBB, le MIOpen cache est actif avec une taille de 4Go.
