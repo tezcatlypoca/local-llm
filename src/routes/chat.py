@@ -19,92 +19,71 @@ logger = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)
 
 
-def _validate_chat_messages(messages):
+def _extract_message(request_data):
     """
-    Valide et prépare les messages pour /chat.
+    Extrait le message de la requête. Accepte plusieurs formats.
     
     Formats acceptés:
-    - list de strings : ["message1", "message2", ...] -> traité comme messages utilisateur
-    - list de dicts avec 'content' : [{"content": "..."}, ...] -> traité comme messages utilisateur
-    - list de dicts avec 'role' et 'content' : [{"role": "user/assistant/system", "content": "..."}]
+    - "message": str - Message simple (prioritaire)
+    - "prompt": str - Alternative pour compatibilité
+    - Objet avec champ "text" ou "content"
     
     Returns:
-        (is_valid: bool, error_message: str, formatted_data: dict)
-        formatted_data contient:
-            - "messages": list de dicts avec role/content (pour apply_chat_template)
-            - "simple_prompt": string (pour fallback ou modèles non-chat)
+        (success: bool, error_message: str, message_text: str or None)
     """
-    if messages is None:
-        return False, "Le champ 'messages' est requis pour /chat.", None
-    
-    # Format list requis
-    if not isinstance(messages, list):
-        return False, "Le champ 'messages' doit être une liste.", None
-    
-    if len(messages) == 0:
-        return False, "La liste de messages ne peut pas être vide.", None
-    
-    # Extraire les messages au format structuré
-    structured_messages = []
-    prompt_parts = []
-    
-    for idx, msg in enumerate(messages):
-        if isinstance(msg, str):
-            # Message simple (string) -> traité comme message utilisateur
-            if not msg.strip():
-                return False, f"Le message à l'index {idx} ne peut pas être vide.", None
-            structured_messages.append({"role": "user", "content": msg.strip()})
-            prompt_parts.append(msg.strip())
-        elif isinstance(msg, dict):
-            # Message dict - vérifier s'il a un role
-            role = msg.get("role")
-            content = msg.get("content") or msg.get("text") or msg.get("message")
-            
-            if content is None:
-                return False, f"Le message à l'index {idx} doit contenir 'content', 'text' ou 'message'.", None
-            if not isinstance(content, str) or not content.strip():
-                return False, f"Le contenu du message à l'index {idx} ne peut pas être vide.", None
-            
-            # Si un rôle est fourni, l'utiliser (normaliser en lowercase)
-            if role and isinstance(role, str):
-                normalized_role = role.lower()
-                # Valider le rôle
-                if normalized_role not in ["user", "assistant", "system"]:
-                    logger.warning(f"Rôle invalide '{role}' au message {idx}, utilisation de 'user' par défaut")
-                    normalized_role = "user"
-                structured_messages.append({"role": normalized_role, "content": content.strip()})
-            else:
-                # Pas de rôle -> traité comme utilisateur
-                structured_messages.append({"role": "user", "content": content.strip()})
-            
-            prompt_parts.append(content.strip())
+    # Priorité 1: champ "message"
+    if "message" in request_data:
+        message = request_data["message"]
+        if isinstance(message, str):
+            if not message.strip():
+                return False, "Le champ 'message' ne peut pas être vide.", None
+            return True, None, message.strip()
+        elif isinstance(message, dict):
+            # Objet avec champ text ou content
+            text = message.get("text") or message.get("content") or message.get("message")
+            if text and isinstance(text, str) and text.strip():
+                return True, None, text.strip()
+            return False, "Le champ 'message' (objet) doit contenir 'text', 'content' ou 'message' avec une valeur non vide.", None
         else:
-            return False, f"Le message à l'index {idx} doit être une string ou un dictionnaire.", None
+            return False, "Le champ 'message' doit être une chaîne de caractères (str) ou un objet avec 'text'/'content'.", None
     
-    # Retourner à la fois les messages structurés et le prompt simple (pour compatibilité)
-    formatted_data = {
-        "messages": structured_messages,
-        "simple_prompt": "\n".join(prompt_parts)
-    }
+    # Priorité 2: champ "prompt" (compatibilité)
+    if "prompt" in request_data:
+        prompt = request_data["prompt"]
+        if isinstance(prompt, str):
+            if not prompt.strip():
+                return False, "Le champ 'prompt' ne peut pas être vide.", None
+            return True, None, prompt.strip()
+        else:
+            return False, "Le champ 'prompt' doit être une chaîne de caractères (str).", None
     
-    return True, None, formatted_data
+    return False, "Le body JSON doit contenir soit un champ 'message' (str ou objet) soit un champ 'prompt' (str).", None
 
 
 @chat_bp.route('/chat/<int:gpu_id>', methods=['POST'])
 def chat(gpu_id: int):
     """
-    Génère une réponse de chat conversationnel en utilisant le modèle chargé sur le GPU spécifié.
+    Génère une réponse en utilisant le modèle chargé sur le GPU spécifié.
+    
+    Cette route accepte un message simple sans formatage de contexte/template.
+    La gestion du contexte et du formatage doit être effectuée par la surcouche API appelante.
     
     Args:
         gpu_id: Numéro du GPU (0 ou 1) contenant le modèle à utiliser
     
     Body JSON requis:
         {
-            "messages": list,         # Requis: liste de messages (strings ou dicts avec 'content')
-                                     # Exemples: ["msg1", "msg2"] ou [{"content": "msg1"}, ...]
-                                     # L'API concatène simplement les messages, le formatage est géré par l'app client
+            "message": str ou objet,  # Requis: message texte simple
+                                     # Format str: "Votre message ici"
+                                     # Format objet: {"text": "..."} ou {"content": "..."}
             "temperature": float,     # Optionnel: température pour la génération (défaut: 0.7)
             "max_new_tokens": int     # Optionnel: nombre max de nouveaux tokens (défaut: 512)
+        }
+    
+    Alternative (compatibilité):
+        {
+            "prompt": str,            # Alternative au champ "message"
+            ...
         }
     
     Returns:
@@ -133,11 +112,10 @@ def chat(gpu_id: int):
                 'message': 'Le body de la requête doit être au format JSON. Assurez-vous d\'envoyer du JSON et de définir le header Content-Type: application/json dans Postman.'
             }), 400
         
-        # Extraire et valider les messages (format conversationnel)
-        messages = request_data.get('messages')
-        is_valid, error_msg, message_data = _validate_chat_messages(messages)
+        # Extraire le message (format simple, sans formatage)
+        success, error_msg, message_text = _extract_message(request_data)
         
-        if not is_valid:
+        if not success:
             return jsonify({
                 'status': 'error',
                 'message': error_msg
@@ -206,19 +184,16 @@ def chat(gpu_id: int):
         
         model_name = gpu_status.get("model_name", "unknown")
         
-        # Générer la réponse
-        # Passer les messages structurés si disponibles (pour apply_chat_template)
-        # Sinon utiliser le prompt simple
+        # Générer la réponse (message passé tel quel, sans formatage)
         logger.info(f"Génération de réponse sur GPU {gpu_id} avec modèle {model_name}...")
         response = manager.generate(
-            prompt=message_data["simple_prompt"],
+            prompt=message_text,
             gpu_id=gpu_id,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
             do_sample=True,
             top_p=0.9,
-            repetition_penalty=1.2,  # Pénalité contre les répétitions (augmentée pour chat)
-            structured_messages=message_data["messages"]  # Passer les messages structurés pour apply_chat_template
+            repetition_penalty=1.2
         )
         
         if response is None:

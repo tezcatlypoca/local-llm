@@ -250,14 +250,16 @@ class LLMManager:
         temperature: float = 0.7,
         top_p: float = 0.9,
         do_sample: bool = True,
-        structured_messages: Optional[List[Dict[str, str]]] = None,
         **generation_kwargs
     ) -> Optional[str]:
         """
         Génère une réponse à partir d'un prompt en utilisant le modèle sur le GPU spécifié.
         
+        Le prompt est utilisé tel quel, sans formatage ni template de contexte.
+        La gestion du contexte et du formatage doit être effectuée par la surcouche API appelante.
+        
         Args:
-            prompt: Texte d'entrée (prompt)
+            prompt: Texte d'entrée (prompt brut, sans formatage)
             gpu_id: ID du GPU (0 ou 1) à utiliser pour l'inférence
             max_length: Longueur maximale totale (prompt + génération)
             max_new_tokens: Nombre maximum de nouveaux tokens à générer (prioritaire sur max_length)
@@ -282,112 +284,25 @@ class LLMManager:
         device = self.devices[gpu_id]
         
         try:
-            # Détection du type de modèle pour un traitement spécifique
-            model_name_lower = self.model_names[gpu_id].lower() if self.model_names[gpu_id] else ""
-            is_qwen = "qwen" in model_name_lower
-            
-            use_chat_template = False
-            formatted_prompt = prompt
-            original_prompt = prompt  # Conserver le prompt original pour le décodage
-            
-            # Vérifier si le tokenizer a apply_chat_template (priorité absolue)
-            has_chat_template = hasattr(tokenizer, 'apply_chat_template') and callable(getattr(tokenizer, 'apply_chat_template', None))
-            
-            # Détection des modèles de base uniquement si PAS de chat_template
-            # Les modèles avec chat_template doivent utiliser leur template, pas notre formatage custom
-            is_instruct_model = any(keyword in model_name_lower for keyword in ["instruct", "chat", "assistant", "alpaca", "vicuna"])
-            is_base_model = not has_chat_template and not is_instruct_model and any(keyword in model_name_lower for keyword in ["gpt2", "gpt-neo", "gpt-j"])
-            
-            # Pour les modèles de base (comme GPT2) SANS chat_template, formater le prompt pour qu'il ressemble à une question/réponse
-            # Les modèles de base ne comprennent pas les instructions, il faut leur donner un contexte
-            if is_base_model:
-                # Convertir les messages en format question/réponse simple pour les modèles de base
-                logger.info(f"Détection d'un modèle de base ({self.model_names[gpu_id]}) - formatage spécial du prompt")
-                if structured_messages:
-                    prompt_parts = []
-                    for msg in structured_messages:
-                        role = msg.get("role", "user")
-                        content = msg.get("content", "")
-                        if role == "user":
-                            prompt_parts.append(f"Question: {content}")
-                        elif role == "assistant":
-                            prompt_parts.append(f"Answer: {content}")
-                        else:
-                            prompt_parts.append(content)
-                    formatted_prompt = "\n".join(prompt_parts) + "\nAnswer:"
-                else:
-                    # Pas de messages structurés, formater le prompt simple comme une question
-                    formatted_prompt = f"Question: {prompt.strip()}\nAnswer:"
-                logger.debug(f"Prompt formaté pour modèle de base: {formatted_prompt[:200]}...")
-            # Pour les modèles de chat, essayer d'utiliser apply_chat_template si disponible
-            # Cela formate correctement les prompts pour les modèles conversationnels
-            elif has_chat_template:
-                try:
-                    # Priorité: utiliser structured_messages si fourni (depuis /chat avec rôles)
-                    if structured_messages and isinstance(structured_messages, list) and len(structured_messages) > 0:
-                        # Messages structurés fournis - utiliser directement
-                        formatted_prompt = tokenizer.apply_chat_template(
-                            structured_messages, 
-                            tokenize=False, 
-                            add_generation_prompt=True
-                        )
-                        use_chat_template = True
-                        logger.info(f"Prompt formaté avec apply_chat_template depuis structured_messages (modèle: {self.model_names[gpu_id]}):\n{formatted_prompt}")
-                    else:
-                        # Fallback: parser le prompt simple
-                        # Si le prompt contient plusieurs lignes (messages séparés), essayer de les parser
-                        # Sinon, traiter comme un seul message utilisateur
-                        prompt_lines = [line.strip() for line in prompt.split('\n') if line.strip()]
-                        if len(prompt_lines) > 1:
-                            # Plusieurs messages - essayer de les formater en format chat
-                            messages = []
-                            for line in prompt_lines:
-                                messages.append({"role": "user", "content": line})
-                            formatted_prompt = tokenizer.apply_chat_template(
-                                messages, 
-                                tokenize=False, 
-                                add_generation_prompt=True
-                            )
-                        else:
-                            # Un seul message
-                            messages = [{"role": "user", "content": prompt.strip()}]
-                            formatted_prompt = tokenizer.apply_chat_template(
-                                messages, 
-                                tokenize=False, 
-                                add_generation_prompt=True
-                            )
-                        use_chat_template = True
-                        logger.debug(f"Prompt formaté avec apply_chat_template depuis prompt simple (modèle: {self.model_names[gpu_id]}): {formatted_prompt[:200]}...")
-                except Exception as e:
-                    logger.warning(f"Erreur avec apply_chat_template pour {self.model_names[gpu_id]}, utilisation du prompt brut: {e}", exc_info=True)
-                    # Fallback : utiliser le prompt tel quel
-                    formatted_prompt = prompt
-                    use_chat_template = False
-            
-            # Logging supplémentaire pour le débogage
-            if is_qwen:
-                logger.info(f"Traitement Qwen - use_chat_template: {use_chat_template}, prompt_length: {len(prompt)}, formatted_length: {len(formatted_prompt)}")
-                logger.info(f"Prompt formaté complet pour Qwen:\n{formatted_prompt}")
+            # Utiliser le prompt tel quel, sans formatage ni template
+            # La surcouche API appelante doit gérer le formatage du contexte
+            formatted_prompt = prompt.strip()
             
             # Tokenisation : pas de padding nécessaire pour une seule séquence de génération
-            # Le padding est seulement utile pour le traitement par batch
             inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=False, truncation=True)
             logger.info(f"Input tokenisés - shape: {inputs['input_ids'].shape}, nombre de tokens: {inputs['input_ids'].shape[1]}")
             
-            # Pour Qwen, s'assurer que le tokenizer a les bons paramètres
-            if is_qwen and tokenizer.pad_token is None:
+            # S'assurer que le tokenizer a un pad_token si nécessaire
+            if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
-                logger.debug("Token de padding configuré pour Qwen (utilise eos_token)")
             
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
             # Génération
             with torch.no_grad():
-                # Configuration spécifique pour Qwen - ces modèles nécessitent des paramètres plus stables
-                # pour éviter les problèmes de probabilités invalides (NaN/Inf) sur ROCm
-                if is_qwen and do_sample:
-                    # Température minimale plus élevée pour Qwen (0.3 au lieu de 0.01)
-                    # Cela évite les problèmes numériques avec float16 sur ROCm
+                # Configuration de sécurité pour éviter les problèmes de probabilités invalides (NaN/Inf) sur ROCm
+                if do_sample:
+                    # Température minimale pour éviter les problèmes numériques avec float16 sur ROCm
                     safe_temperature = max(temperature, 0.3)
                     # Top_k systématique pour limiter les candidats et éviter les valeurs extrêmes
                     safe_top_k = generation_kwargs.get("top_k", 50)
@@ -397,10 +312,10 @@ class LLMManager:
                     safe_repetition_penalty = generation_kwargs.get("repetition_penalty", 1.1)
                     if safe_repetition_penalty > 1.2:
                         safe_repetition_penalty = 1.2
-                    logger.debug(f"Paramètres Qwen ajustés - temp: {safe_temperature}, top_k: {safe_top_k}, top_p: {safe_top_p}, rep_penalty: {safe_repetition_penalty}")
+                    logger.debug(f"Paramètres ajustés - temp: {safe_temperature}, top_k: {safe_top_k}, top_p: {safe_top_p}, rep_penalty: {safe_repetition_penalty}")
                 else:
-                    # Pour les autres modèles, utiliser les valeurs standard
-                    safe_temperature = max(temperature, 0.01) if do_sample else temperature
+                    # Pour le décodage greedy, utiliser les valeurs standard
+                    safe_temperature = temperature
                     safe_top_k = generation_kwargs.get("top_k")
                     safe_top_p = top_p
                     safe_repetition_penalty = generation_kwargs.get("repetition_penalty", 1.1)
@@ -416,8 +331,8 @@ class LLMManager:
                     **generation_kwargs
                 }
                 
-                # Ajouter top_k pour Qwen si pas déjà présent
-                if is_qwen and do_sample and safe_top_k is not None and "top_k" not in generation_config:
+                # Ajouter top_k si pas déjà présent et si disponible
+                if do_sample and safe_top_k is not None and "top_k" not in generation_config:
                     generation_config["top_k"] = safe_top_k
                 
                 # Si max_new_tokens est spécifié, l'utiliser à la place de max_length
@@ -444,44 +359,32 @@ class LLMManager:
                     logger.error(f"RuntimeError lors de la génération pour {self.model_names[gpu_id]}: {error_msg}")
                     if "probability tensor" in error_msg.lower() or "nan" in error_msg.lower() or "inf" in error_msg.lower():
                         logger.warning(f"Erreur de probabilités invalides détectée: {error_msg}")
+                        # Stratégie de réessai progressive
+                        logger.info("Réessai avec paramètres de génération plus stables...")
+                        generation_config["temperature"] = max(safe_temperature, 0.7)
+                        generation_config["top_p"] = 0.9
+                        generation_config["top_k"] = 40
+                        generation_config["repetition_penalty"] = 1.1
+                        logger.debug(f"Paramètres ajustés: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
                         
-                        # Stratégie de réessai progressive pour Qwen
-                        if is_qwen:
-                            # Pour Qwen, essayer d'abord avec des paramètres encore plus stables
-                            logger.info("Réessai Qwen avec paramètres de génération plus stables...")
-                            generation_config["temperature"] = max(safe_temperature, 0.7)  # Température minimale encore plus élevée
-                            generation_config["top_p"] = 0.9  # Top_p fixe
-                            generation_config["top_k"] = 40  # Top_k réduit
-                            generation_config["repetition_penalty"] = 1.1  # Répétition penalty réduite
-                            logger.debug(f"Paramètres Qwen ajustés: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
-                            
+                        try:
+                            outputs = model.generate(**inputs, **generation_config)
+                            logger.info("Réessai réussi avec paramètres ajustés")
+                        except RuntimeError as e2:
+                            error_msg2 = str(e2)
+                            logger.warning(f"Deuxième tentative échouée: {error_msg2}")
+                            # Dernière tentative: désactiver l'échantillonnage (greedy decoding)
+                            logger.info("Dernière tentative avec décodage greedy (do_sample=False)...")
+                            generation_config["do_sample"] = False
+                            generation_config.pop("temperature", None)
+                            generation_config.pop("top_p", None)
+                            generation_config.pop("top_k", None)
                             try:
                                 outputs = model.generate(**inputs, **generation_config)
-                                logger.info("Réessai réussi avec paramètres ajustés")
-                            except RuntimeError as e2:
-                                error_msg2 = str(e2)
-                                logger.warning(f"Deuxième tentative échouée: {error_msg2}")
-                                # Dernière tentative: désactiver l'échantillonnage (greedy decoding)
-                                logger.info("Dernière tentative avec décodage greedy (do_sample=False)...")
-                                generation_config["do_sample"] = False
-                                generation_config.pop("temperature", None)
-                                generation_config.pop("top_p", None)
-                                generation_config.pop("top_k", None)
-                                try:
-                                    outputs = model.generate(**inputs, **generation_config)
-                                    logger.info("Réessai réussi avec décodage greedy")
-                                except RuntimeError as e3:
-                                    logger.error(f"Toutes les tentatives ont échoué: {str(e3)}")
-                                    raise
-                        else:
-                            # Pour les autres modèles, utiliser la stratégie standard
-                            logger.info("Réessai avec paramètres de génération plus stables...")
-                            generation_config["temperature"] = max(safe_temperature, 0.5)
-                            generation_config["top_p"] = min(top_p, 0.95)
-                            if "top_k" not in generation_config:
-                                generation_config["top_k"] = 50
-                            logger.debug(f"Nouveaux paramètres: temp={generation_config['temperature']}, top_p={generation_config['top_p']}, top_k={generation_config.get('top_k')}")
-                            outputs = model.generate(**inputs, **generation_config)
+                                logger.info("Réessai réussi avec décodage greedy")
+                            except RuntimeError as e3:
+                                logger.error(f"Toutes les tentatives ont échoué: {str(e3)}")
+                                raise
                     else:
                         # Autre erreur RuntimeError, la remonter
                         raise
@@ -503,71 +406,18 @@ class LLMManager:
             logger.debug(f"Tokens générés: {len(generated_ids)} tokens (input: {input_length}, output: {output_length})")
             
             # Décoder les nouveaux tokens uniquement
-            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
-            logger.info(f"Texte décodé brut (longueur: {len(generated_text)}, premiers 500 chars): {generated_text[:500]}")
-            logger.info(f"Texte décodé brut complet:\n{generated_text}")
+            # Utiliser skip_special_tokens=True pour retirer les tokens spéciaux du tokenizer
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            logger.info(f"Texte généré (longueur: {len(generated_text)}): {generated_text[:500]}")
             
             # Vérifier si la réponse contient uniquement des caractères répétitifs (signe de problème)
             if generated_text.strip():
                 unique_chars = set(generated_text.strip())
                 if len(unique_chars) == 1 and len(generated_text.strip()) > 10:
                     logger.warning(f"Réponse suspecte détectée: uniquement le caractère '{generated_text.strip()[0]}' répété {len(generated_text.strip())} fois")
-                    logger.warning("Cela peut indiquer un problème avec le prompt formaté ou les paramètres de génération")
             
-            # Nettoyer la réponse : retirer les tokens spéciaux de fin de conversation pour les modèles de chat
-            # Tokens spéciaux spécifiques à Qwen et autres modèles
-            generated_text = generated_text.strip()
-            
-            # Retirer les préfixes/suffixes communs des modèles de chat qui peuvent rester
-            # Spécifiques à Qwen: <|im_start|>, <|im_end|>, <|endoftext|>
-            chat_end_patterns = [
-                '</s>', 
-                '<|endoftext|>', 
-                '<|end|>', 
-                '<|im_end|>',
-                '<|im_start|>',
-                '\nUser:', 
-                '\nAssistant:', 
-                '\nSystem:',
-                'User:',
-                'Assistant:',
-                'System:'
-            ]
-            
-            # Retirer les patterns de fin
-            for pattern in chat_end_patterns:
-                # Retirer à la fin
-                while generated_text.endswith(pattern):
-                    generated_text = generated_text[:-len(pattern)].strip()
-                # Retirer au début
-                while generated_text.startswith(pattern):
-                    generated_text = generated_text[len(pattern):].strip()
-            
-            # Pour Qwen spécifiquement, nettoyer les tokens de formatage qui peuvent rester
-            if is_qwen:
-                # Retirer les tokens de formatage Qwen qui peuvent apparaître
-                qwen_patterns = [
-                    '<|im_start|>assistant\n',
-                    '<|im_end|>\n',
-                    '\n<|im_end|>',
-                    '<|im_start|>',
-                ]
-                for pattern in qwen_patterns:
-                    generated_text = generated_text.replace(pattern, '')
-                generated_text = generated_text.strip()
-            
-            logger.info(f"Texte généré final (après nettoyage, longueur: {len(generated_text)}): {generated_text[:500]}")
-            
-            # Vérifier si la réponse est vide ou très courte après nettoyage
-            if not generated_text.strip():
-                # Re-décoder pour obtenir le texte brut
-                raw_text = tokenizer.decode(generated_ids, skip_special_tokens=False).strip()
-                logger.warning(f"La réponse générée est vide après nettoyage pour {self.model_names[gpu_id]}. Texte brut avant nettoyage (premiers 200 chars): {raw_text[:200]}")
-                # Retourner le texte brut si le nettoyage a tout supprimé mais qu'il y a du contenu brut
-                if raw_text:
-                    logger.info("Retour du texte brut car le nettoyage a supprimé tout le contenu")
-                    return raw_text
-            
+            # Retourner le texte tel quel, sans nettoyage spécifique
+            # La surcouche API appelante gère le formatage et le nettoyage si nécessaire
             return generated_text.strip()
             
         except Exception as e:
