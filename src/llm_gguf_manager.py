@@ -190,6 +190,8 @@ class LLMGGUFManager:
             verbose = model_kwargs.get('verbose', False)
             
             logger.info(f"Chargement du modèle GGUF avec n_ctx={n_ctx}, n_gpu_layers={n_gpu_layers}...")
+            logger.info(f"Fichier GGUF: {gguf_file}")
+            logger.info(f"Taille du fichier: {os.path.getsize(gguf_file) / (1024**3):.2f} GB")
             
             # Charger le modèle avec llama-cpp-python
             llama_kwargs = {
@@ -201,7 +203,13 @@ class LLMGGUFManager:
             if n_threads is not None:
                 llama_kwargs['n_threads'] = n_threads
             
-            model = Llama(**llama_kwargs)
+            logger.info("Début du chargement avec llama-cpp-python (cela peut prendre 1-2 minutes)...")
+            try:
+                model = Llama(**llama_kwargs)
+                logger.info("✅ Modèle GGUF chargé avec succès dans llama-cpp-python")
+            except Exception as e:
+                logger.error(f"❌ Erreur lors du chargement avec llama-cpp-python: {e}", exc_info=True)
+                raise
             
             logger.info(f"Modèle GGUF chargé avec succès sur GPU {gpu_id}")
             

@@ -93,7 +93,15 @@ def _find_free_gpu(manager, is_gguf: bool = False) -> int:
 def _is_gguf_model(model_name: str) -> bool:
     """Détecte si un modèle est au format GGUF."""
     model_name_lower = model_name.lower()
-    return '.gguf' in model_name_lower or 'gguf' in model_name_lower
+    # Vérifier si le nom contient .gguf ou si c'est un chemin vers un fichier .gguf
+    if '.gguf' in model_name_lower or 'gguf' in model_name_lower:
+        return True
+    # Vérifier si c'est un chemin de fichier qui se termine par .gguf
+    from pathlib import Path
+    path = Path(model_name)
+    if path.exists() and path.suffix.lower() == '.gguf':
+        return True
+    return False
 
 
 @model_management_bp.route('/models/load/<path:model_name>', methods=['POST'])
@@ -172,16 +180,27 @@ def load_model(model_name: str):
         tokenizer_name = request_data.get('tokenizer_name', None)
 
         logger.info(f"Chargement du modèle '{model_name}' (type: {'GGUF' if is_gguf else 'transformers'}) sur GPU {gpu_id}...")
+        logger.info(f"Détection GGUF: {is_gguf}, Chemin modèle: {model_path}")
         
-        if is_gguf:
-            success, access_token = manager.load_model(
-                model_path, 
-                gpu_id=gpu_id, 
-                tokenizer_name=tokenizer_name,
-                **model_kwargs
-            )
-        else:
-            success, access_token = manager.load_model(model_name, gpu_id=gpu_id, **model_kwargs)
+        try:
+            if is_gguf:
+                logger.info(f"Utilisation du gestionnaire GGUF pour charger: {model_path}")
+                success, access_token = manager.load_model(
+                    model_path, 
+                    gpu_id=gpu_id, 
+                    tokenizer_name=tokenizer_name,
+                    **model_kwargs
+                )
+            else:
+                logger.info(f"Utilisation du gestionnaire transformers pour charger: {model_name}")
+                success, access_token = manager.load_model(model_name, gpu_id=gpu_id, **model_kwargs)
+        except Exception as e:
+            logger.error(f"Erreur lors du chargement du modèle: {e}", exc_info=True)
+            return jsonify({
+                'status': 'error',
+                'message': f'Erreur lors du chargement: {str(e)}',
+                'model_type': 'gguf' if is_gguf else 'transformers'
+            }), 500
 
         if success:
             gpu_status = manager.get_model_status(gpu_id=gpu_id)
