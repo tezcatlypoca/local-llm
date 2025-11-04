@@ -91,6 +91,15 @@ def _scan_huggingface_models():
                 }
                 
                 # Détecter le format du modèle
+                # Vérifier d'abord dans les fichiers si pas trouvé dans les métadonnées
+                snapshot_path = getattr(latest_revision, "snapshot_path", None)
+                if snapshot_path and os.path.exists(snapshot_path):
+                    for root, _, files in os.walk(snapshot_path):
+                        for file in files:
+                            if file.endswith('.gguf'):
+                                if file not in gguf_files:
+                                    gguf_files.append(file)
+                
                 if gguf_files:
                     model_info["model_format"] = "gguf"
                     model_info["gguf_files"] = sorted(gguf_files)
@@ -109,20 +118,7 @@ def _scan_huggingface_models():
                         recommended = gguf_files[0]
                     model_info["recommended_gguf_file"] = recommended
                 else:
-                    # Vérifier aussi dans les fichiers si pas trouvé dans les métadonnées
-                    snapshot_path = getattr(latest_revision, "snapshot_path", None)
-                    if snapshot_path and os.path.exists(snapshot_path):
-                        for root, _, files in os.walk(snapshot_path):
-                            for file in files:
-                                if file.endswith('.gguf'):
-                                    if not gguf_files:
-                                        model_info["model_format"] = "gguf"
-                                        model_info["gguf_files"] = []
-                                    if file not in gguf_files:
-                                        gguf_files.append(file)
-                                        model_info["gguf_files"].append(file)
-                    if not gguf_files:
-                        model_info["model_format"] = "transformers"
+                    model_info["model_format"] = "transformers"
 
                 # Lecture du fichier config.json si présent
                 if model_info["path"]:
@@ -152,6 +148,60 @@ def _scan_huggingface_models():
         return models
 
     try:
+        # D'abord, scanner tous les fichiers .gguf dans le cache pour trouver les modèles GGUF
+        # (parfois ils sont dans des sous-répertoires qui ne sont pas des snapshots)
+        all_gguf_files = {}
+        for root, _, files in os.walk(cache_dir):
+            for file in files:
+                if file.endswith('.gguf'):
+                    full_path = os.path.join(root, file)
+                    # Extraire l'identifiant depuis le chemin
+                    rel_path = os.path.relpath(full_path, cache_dir)
+                    parts = rel_path.split(os.sep)
+                    
+                    model_id = None
+                    # Méthode 1: Chercher models--org--model
+                    for part in parts:
+                        if part.startswith("models--") and "--" in part:
+                            model_id = part.replace("models--", "").replace("--", "/")
+                            break
+                    
+                    # Méthode 2: Si pas trouvé, chercher des patterns avec espaces (ex: "bartowski - Qwen2.5 - 7B - Instruct - GGUF")
+                    if not model_id:
+                        for part in parts:
+                            # Détecter les patterns comme "bartowski - Qwen2.5 - 7B - Instruct - GGUF"
+                            if " - " in part or "- " in part:
+                                # Essayer de reconstruire l'identifiant
+                                # Ex: "bartowski - Qwen2.5 - 7B - Instruct - GGUF" -> "bartowski/Qwen2.5-7B-Instruct-GGUF"
+                                clean_part = part.replace(" - ", "/").replace("- ", "-").replace(" -", "-")
+                                # Nettoyer les espaces restants
+                                clean_part = clean_part.replace(" ", "-")
+                                if "/" in clean_part:
+                                    model_id = clean_part
+                                    break
+                            # Ou chercher directement dans les noms de répertoires
+                            elif any(keyword in part.lower() for keyword in ["qwen", "mistral", "codellama", "llama"]):
+                                # Essayer de trouver l'org dans les parties précédentes
+                                for i, p in enumerate(parts):
+                                    if p == part and i > 0:
+                                        # Prendre la partie précédente comme org
+                                        org = parts[i-1].replace(" ", "").replace("-", "")
+                                        model_name = part.replace(" ", "-").replace("_", "-")
+                                        model_id = f"{org}/{model_name}"
+                                        break
+                                if model_id:
+                                    break
+                    
+                    if model_id:
+                        if model_id not in all_gguf_files:
+                            all_gguf_files[model_id] = []
+                        all_gguf_files[model_id].append({
+                            "file": file,
+                            "path": full_path,
+                            "dir": root
+                        })
+        
+        # Maintenant scanner les répertoires normalement
         for item in os.listdir(cache_dir):
             item_path = os.path.join(cache_dir, item)
             if not os.path.isdir(item_path) or item.startswith("."):
@@ -165,6 +215,7 @@ def _scan_huggingface_models():
             }
 
             gguf_files = []
+            gguf_paths = {}  # Stocker les chemins complets des fichiers GGUF
             for root, _, files in os.walk(item_path):
                 for file in files:
                     full_path = os.path.join(root, file)
@@ -175,6 +226,7 @@ def _scan_huggingface_models():
                         model_info["files"].append(rel_path)
                         if file.endswith('.gguf'):
                             gguf_files.append(file)
+                            gguf_paths[file] = full_path
                     elif file == "config.json":
                         config_path = os.path.join(root, file)
                     elif file in ("tokenizer.json", "vocab.json", "merges.txt"):
@@ -198,6 +250,9 @@ def _scan_huggingface_models():
                 if not recommended and gguf_files:
                     recommended = gguf_files[0]
                 model_info["recommended_gguf_file"] = recommended
+                # Stocker le chemin complet du fichier recommandé
+                if recommended and recommended in gguf_paths:
+                    model_info["recommended_gguf_file_path"] = gguf_paths[recommended]
             else:
                 model_info["model_format"] = "transformers"
 
@@ -225,6 +280,50 @@ def _scan_huggingface_models():
                     model_info["identifier"] = item
 
                 model_info["size_mb"] = round(_calculate_directory_size(item_path) / (1024 * 1024), 2)
+                models.append(model_info)
+        
+        # Ajouter les modèles GGUF trouvés qui ne sont pas dans les répertoires principaux
+        for model_id, gguf_list in all_gguf_files.items():
+            # Vérifier si ce modèle n'est pas déjà dans la liste
+            existing = False
+            for existing_model in models:
+                if existing_model.get("identifier") == model_id:
+                    existing = True
+                    break
+            
+            if not existing and gguf_list:
+                # Créer une entrée pour ce modèle GGUF
+                gguf_file_names = [g["file"] for g in gguf_list]
+                recommended = None
+                for gguf in sorted(gguf_file_names):
+                    if 'q4_k_m' in gguf.lower():
+                        recommended = gguf
+                        break
+                if not recommended:
+                    for gguf in sorted(gguf_file_names):
+                        if 'q4_0' in gguf.lower() or 'q4' in gguf.lower():
+                            recommended = gguf
+                            break
+                if not recommended:
+                    recommended = gguf_file_names[0]
+                
+                # Trouver le chemin du fichier recommandé
+                recommended_path = None
+                for g in gguf_list:
+                    if g["file"] == recommended:
+                        recommended_path = g["path"]
+                        break
+                
+                model_info = {
+                    "identifier": model_id,
+                    "model_format": "gguf",
+                    "gguf_files": sorted(gguf_file_names),
+                    "recommended_gguf_file": recommended,
+                    "recommended_gguf_file_path": recommended_path,
+                    "path": os.path.dirname(gguf_list[0]["path"]) if gguf_list else None,
+                    "files": gguf_file_names,
+                    "size_mb": round(sum(os.path.getsize(g["path"]) for g in gguf_list) / (1024 * 1024), 2) if gguf_list else 0
+                }
                 models.append(model_info)
 
         logger.info(f"Scan manuel du cache: {len(models)} modèle(s) trouvé(s)")

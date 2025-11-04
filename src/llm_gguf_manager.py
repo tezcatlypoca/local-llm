@@ -102,10 +102,12 @@ class LLMGGUFManager:
         path_lower = model_path.lower()
         
         # Mapping des modèles GGUF vers leurs tokenizers
-        if 'qwen2.5-7b-instruct' in path_lower or 'qwen2.5_7b_instruct' in path_lower:
+        if 'qwen2.5-7b-instruct' in path_lower or 'qwen2.5_7b_instruct' in path_lower or 'qwen2.5' in path_lower:
             return "Qwen/Qwen2.5-7B-Instruct"
-        elif 'qwen2-7b-instruct' in path_lower:
+        elif 'qwen2-7b-instruct' in path_lower or 'qwen2' in path_lower:
             return "Qwen/Qwen2-7B-Instruct"
+        elif 'codellama-7b-instruct' in path_lower or 'codellama_7b_instruct' in path_lower or 'codellama' in path_lower:
+            return "codellama/CodeLlama-7b-Instruct-hf"
         elif 'mistral-7b-instruct' in path_lower or 'mistral_7b_instruct' in path_lower:
             return "mistralai/Mistral-7B-Instruct-v0.2"
         elif 'mistral-7b-v0.1' in path_lower:
@@ -114,11 +116,14 @@ class LLMGGUFManager:
         # Essayer d'extraire depuis le chemin
         parts = model_path.replace('\\', '/').split('/')
         for part in parts:
-            if 'qwen' in part.lower():
-                if '2.5' in part.lower():
+            part_lower = part.lower()
+            if 'qwen' in part_lower:
+                if '2.5' in part_lower:
                     return "Qwen/Qwen2.5-7B-Instruct"
                 return "Qwen/Qwen2-7B-Instruct"
-            elif 'mistral' in part.lower():
+            elif 'codellama' in part_lower or 'code-llama' in part_lower:
+                return "codellama/CodeLlama-7b-Instruct-hf"
+            elif 'mistral' in part_lower:
                 return "mistralai/Mistral-7B-Instruct-v0.2"
         
         return None
