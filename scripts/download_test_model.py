@@ -226,9 +226,9 @@ def download_gguf_model(repo_id: str, filename: str, local_dir: str = None) -> b
         print(f"   ✅ Modèle téléchargé avec succès !")
         print(f"   Chemin: {downloaded_path}")
         print(f"   Taille: {file_size_gb:.2f} GB")
-        print(f"\n💡 Ce modèle est au format GGUF et nécessite llama.cpp pour être utilisé.")
-        print(f"   Il n'est pas compatible avec l'API actuelle basée sur transformers.")
-        print(f"   Pour utiliser ce modèle, vous devrez intégrer llama.cpp dans votre projet.")
+        print(f"\n💡 Ce modèle est au format GGUF et est compatible avec votre API.")
+        print(f"   Pour le charger, utilisez: POST /models/load/{downloaded_path}")
+        print(f"   L'API détectera automatiquement le format GGUF et utilisera llama.cpp.")
         
         return True
         
@@ -277,7 +277,7 @@ def main():
         print()
         print("ℹ️  Les modèles GGUF sont pré-quantifiés et optimisés.")
         print("   Avantages: Téléchargement 3x plus rapide, compatible CPU/GPU, meilleure performance.")
-        print("   Note: Ces modèles nécessitent llama.cpp pour être utilisés (pas encore intégré dans l'API).\n")
+        print("   Note: L'API détecte automatiquement les modèles GGUF et les charge avec llama.cpp.\n")
         
         # Informer l'utilisateur si ROCm est détecté
         if IS_ROCM:
@@ -347,9 +347,9 @@ def main():
         
         if success:
             print("\n✅ Téléchargement terminé !")
-            print("\n⚠️  IMPORTANT: Ce modèle est au format GGUF.")
-            print("   Pour l'utiliser, vous devrez intégrer llama.cpp dans votre projet.")
-            print("   L'API actuelle basée sur transformers ne peut pas charger ce format.")
+            print("\n💡 Pour charger ce modèle dans l'API:")
+            print("   POST /models/load/<chemin_vers_le_fichier.gguf>")
+            print("   L'API détectera automatiquement le format GGUF.")
             sys.exit(0)
         else:
             print("\n❌ Échec du téléchargement.")

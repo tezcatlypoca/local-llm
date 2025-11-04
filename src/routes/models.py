@@ -68,13 +68,18 @@ def _scan_huggingface_models():
 
                 # Noms de fichiers
                 file_names = []
+                gguf_files = []
                 if hasattr(latest_revision, "files") and latest_revision.files:
                     for f in list(latest_revision.files):
                         for attr in ("file_path", "blob_path", "filename", "file_name", "path"):
                             if hasattr(f, attr):
                                 path_val = getattr(f, attr)
                                 if path_val:
-                                    file_names.append(os.path.basename(str(path_val)))
+                                    filename = os.path.basename(str(path_val))
+                                    file_names.append(filename)
+                                    # Détecter les fichiers GGUF
+                                    if filename.endswith('.gguf'):
+                                        gguf_files.append(filename)
                                     break
 
                 model_info = {
@@ -84,6 +89,40 @@ def _scan_huggingface_models():
                     "path": str(getattr(latest_revision, "snapshot_path", "")),
                     "files": file_names,
                 }
+                
+                # Détecter le format du modèle
+                if gguf_files:
+                    model_info["model_format"] = "gguf"
+                    model_info["gguf_files"] = sorted(gguf_files)
+                    # Recommander le meilleur fichier GGUF (préférer Q4_K_M, puis Q4_0)
+                    recommended = None
+                    for gguf in sorted(gguf_files):
+                        if 'q4_k_m' in gguf.lower():
+                            recommended = gguf
+                            break
+                    if not recommended:
+                        for gguf in sorted(gguf_files):
+                            if 'q4_0' in gguf.lower() or 'q4' in gguf.lower():
+                                recommended = gguf
+                                break
+                    if not recommended and gguf_files:
+                        recommended = gguf_files[0]
+                    model_info["recommended_gguf_file"] = recommended
+                else:
+                    # Vérifier aussi dans les fichiers si pas trouvé dans les métadonnées
+                    snapshot_path = getattr(latest_revision, "snapshot_path", None)
+                    if snapshot_path and os.path.exists(snapshot_path):
+                        for root, _, files in os.walk(snapshot_path):
+                            for file in files:
+                                if file.endswith('.gguf'):
+                                    if not gguf_files:
+                                        model_info["model_format"] = "gguf"
+                                        model_info["gguf_files"] = []
+                                    if file not in gguf_files:
+                                        gguf_files.append(file)
+                                        model_info["gguf_files"].append(file)
+                    if not gguf_files:
+                        model_info["model_format"] = "transformers"
 
                 # Lecture du fichier config.json si présent
                 if model_info["path"]:
@@ -125,6 +164,7 @@ def _scan_huggingface_models():
                 "files": []
             }
 
+            gguf_files = []
             for root, _, files in os.walk(item_path):
                 for file in files:
                     full_path = os.path.join(root, file)
@@ -133,10 +173,33 @@ def _scan_huggingface_models():
                     if file.endswith((".bin", ".safetensors", ".pt", ".pth", ".gguf")):
                         has_model_files = True
                         model_info["files"].append(rel_path)
+                        if file.endswith('.gguf'):
+                            gguf_files.append(file)
                     elif file == "config.json":
                         config_path = os.path.join(root, file)
                     elif file in ("tokenizer.json", "vocab.json", "merges.txt"):
                         model_info.setdefault("tokenizer_files", []).append(rel_path)
+            
+            # Détecter le format du modèle
+            if gguf_files:
+                model_info["model_format"] = "gguf"
+                model_info["gguf_files"] = sorted(gguf_files)
+                # Recommander le meilleur fichier GGUF
+                recommended = None
+                for gguf in sorted(gguf_files):
+                    if 'q4_k_m' in gguf.lower():
+                        recommended = gguf
+                        break
+                if not recommended:
+                    for gguf in sorted(gguf_files):
+                        if 'q4_0' in gguf.lower() or 'q4' in gguf.lower():
+                            recommended = gguf
+                            break
+                if not recommended and gguf_files:
+                    recommended = gguf_files[0]
+                model_info["recommended_gguf_file"] = recommended
+            else:
+                model_info["model_format"] = "transformers"
 
             if has_model_files:
                 if config_path and os.path.exists(config_path):
@@ -196,11 +259,14 @@ def _scan_local_models_directory(local_dir: str = None):
                     "files": []
                 }
 
+                gguf_files = []
                 for root, _, files in os.walk(item):
                     for file in files:
                         rel_path = os.path.relpath(os.path.join(root, file), item)
                         if file.endswith((".bin", ".safetensors", ".pt", ".pth", ".gguf")):
                             model_info["files"].append(rel_path)
+                            if file.endswith('.gguf'):
+                                gguf_files.append(file)
                         elif file == "config.json":
                             config_path = os.path.join(root, file)
                             try:
@@ -210,6 +276,27 @@ def _scan_local_models_directory(local_dir: str = None):
                                     model_info["architectures"] = config.get("architectures", [])
                             except Exception as e:
                                 logger.debug(f"Erreur lecture config.json: {e}")
+                
+                # Détecter le format du modèle
+                if gguf_files:
+                    model_info["model_format"] = "gguf"
+                    model_info["gguf_files"] = sorted(gguf_files)
+                    # Recommander le meilleur fichier GGUF
+                    recommended = None
+                    for gguf in sorted(gguf_files):
+                        if 'q4_k_m' in gguf.lower():
+                            recommended = gguf
+                            break
+                    if not recommended:
+                        for gguf in sorted(gguf_files):
+                            if 'q4_0' in gguf.lower() or 'q4' in gguf.lower():
+                                recommended = gguf
+                                break
+                    if not recommended and gguf_files:
+                        recommended = gguf_files[0]
+                    model_info["recommended_gguf_file"] = recommended
+                else:
+                    model_info["model_format"] = "transformers"
 
                 if model_info["files"]:
                     model_info["size_mb"] = round(_calculate_directory_size(item) / (1024 * 1024), 2)
