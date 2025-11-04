@@ -168,34 +168,84 @@ def _scan_huggingface_models():
                     
                     # Méthode 2: Si pas trouvé, chercher des patterns avec espaces (ex: "bartowski - Qwen2.5 - 7B - Instruct - GGUF")
                     if not model_id:
-                        for part in parts:
+                        for i, part in enumerate(parts):
                             # Détecter les patterns comme "bartowski - Qwen2.5 - 7B - Instruct - GGUF"
-                            if " - " in part or "- " in part:
+                            if " - " in part or "- " in part or " -" in part:
                                 # Essayer de reconstruire l'identifiant
                                 # Ex: "bartowski - Qwen2.5 - 7B - Instruct - GGUF" -> "bartowski/Qwen2.5-7B-Instruct-GGUF"
-                                clean_part = part.replace(" - ", "/").replace("- ", "-").replace(" -", "-")
+                                clean_part = part.replace(" - ", "/").replace("- ", "-").replace(" -", "-").replace(" -", "-")
                                 # Nettoyer les espaces restants
-                                clean_part = clean_part.replace(" ", "-")
+                                clean_part = clean_part.replace(" ", "-").replace("_", "-")
                                 if "/" in clean_part:
                                     model_id = clean_part
                                     break
-                            # Ou chercher directement dans les noms de répertoires
+                                # Si pas de "/", essayer de le construire
+                                elif i > 0:
+                                    # Prendre la partie précédente comme org potentiel
+                                    org_part = parts[i-1].replace(" ", "").replace("-", "").replace("_", "")
+                                    model_part = part.replace(" - ", "-").replace("- ", "-").replace(" -", "-").replace(" ", "-").replace("_", "-")
+                                    if org_part and model_part:
+                                        model_id = f"{org_part}/{model_part}"
+                                        break
+                            # Ou chercher directement dans les noms de répertoires contenant qwen/mistral/etc
                             elif any(keyword in part.lower() for keyword in ["qwen", "mistral", "codellama", "llama"]):
                                 # Essayer de trouver l'org dans les parties précédentes
-                                for i, p in enumerate(parts):
-                                    if p == part and i > 0:
-                                        # Prendre la partie précédente comme org
-                                        org = parts[i-1].replace(" ", "").replace("-", "")
-                                        model_name = part.replace(" ", "-").replace("_", "-")
+                                if i > 0:
+                                    # Prendre la partie précédente comme org
+                                    org = parts[i-1].replace(" ", "").replace("-", "").replace("_", "")
+                                    model_name = part.replace(" ", "-").replace("_", "-").replace(" - ", "-").replace("- ", "-")
+                                    if org and model_name:
                                         model_id = f"{org}/{model_name}"
                                         break
+                                # Ou chercher dans le nom du fichier lui-même
+                                if not model_id and "qwen" in file.lower():
+                                    if "2.5" in file.lower() or "qwen2.5" in file.lower():
+                                        model_id = "bartowski/Qwen2.5-7B-Instruct-GGUF"
+                                    else:
+                                        model_id = "bartowski/Qwen2-7B-Instruct-GGUF"
+                                    break
+                    
+                    # Si on n'a pas trouvé d'identifiant, essayer de le déduire du nom du fichier
+                    if not model_id and "qwen" in file.lower():
+                        if "2.5" in file.lower() or "qwen2.5" in file.lower():
+                            model_id = "bartowski/Qwen2.5-7B-Instruct-GGUF"
+                        else:
+                            model_id = "bartowski/Qwen2-7B-Instruct-GGUF"
+                    elif not model_id:
+                        # Créer un identifiant générique basé sur le chemin
+                        # Extraire le dernier répertoire qui contient le fichier
+                        path_parts = rel_path.split(os.sep)
+                        for part in reversed(path_parts[:-1]):  # Exclure le nom du fichier
+                            if part and part != "." and not part.startswith("."):
+                                # Essayer de créer un identifiant
+                                clean_part = part.replace(" - ", "/").replace("- ", "-").replace(" -", "-").replace(" ", "-").replace("_", "-")
+                                if "/" in clean_part:
+                                    model_id = clean_part
+                                elif len(path_parts) > 1:
+                                    # Prendre le répertoire parent comme org
+                                    parent_idx = path_parts.index(part) - 1
+                                    if parent_idx >= 0:
+                                        org = path_parts[parent_idx].replace(" ", "").replace("-", "").replace("_", "")
+                                        model_id = f"{org}/{clean_part}"
                                 if model_id:
                                     break
                     
+                    # Si on a un model_id (trouvé ou déduit), l'ajouter
                     if model_id:
                         if model_id not in all_gguf_files:
                             all_gguf_files[model_id] = []
                         all_gguf_files[model_id].append({
+                            "file": file,
+                            "path": full_path,
+                            "dir": root
+                        })
+                    else:
+                        # Même sans identifiant, on stocke avec un identifiant générique pour ne pas perdre le fichier
+                        logger.debug(f"Fichier GGUF trouvé sans identifiant clair: {full_path}")
+                        generic_id = f"unknown/{os.path.basename(root)}"
+                        if generic_id not in all_gguf_files:
+                            all_gguf_files[generic_id] = []
+                        all_gguf_files[generic_id].append({
                             "file": file,
                             "path": full_path,
                             "dir": root
