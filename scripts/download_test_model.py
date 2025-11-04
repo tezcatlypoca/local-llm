@@ -191,12 +191,34 @@ def download_gguf_model(repo_id: str, filename: str, local_dir: str = None) -> b
         
         # Télécharger le fichier GGUF
         print(f"1/1 Téléchargement du fichier GGUF...")
-        downloaded_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            local_dir=local_dir,
-            local_dir_use_symlinks=False
-        )
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=local_dir
+            )
+        except Exception as e:
+            # Si le fichier exact n'existe pas, essayer de lister les fichiers disponibles
+            if "404" in str(e) or "not found" in str(e).lower():
+                print(f"   ⚠️  Fichier '{filename}' introuvable dans le dépôt.")
+                print(f"   📋 Tentative de liste des fichiers disponibles...")
+                try:
+                    from huggingface_hub import list_repo_files
+                    files = list_repo_files(repo_id, repo_type="model")
+                    gguf_files = [f for f in files if f.endswith('.gguf')]
+                    if gguf_files:
+                        print(f"   📁 Fichiers GGUF disponibles dans ce dépôt:")
+                        for f in sorted(gguf_files)[:10]:  # Afficher les 10 premiers
+                            print(f"      - {f}")
+                        if len(gguf_files) > 10:
+                            print(f"      ... et {len(gguf_files) - 10} autres")
+                        print(f"\n   💡 Essayez de télécharger un de ces fichiers directement.")
+                        print(f"   💡 Ou utilisez le format: repo_id/filename.gguf")
+                    else:
+                        print(f"   ❌ Aucun fichier GGUF trouvé dans ce dépôt.")
+                except Exception as e2:
+                    print(f"   ⚠️  Impossible de lister les fichiers: {e2}")
+            raise e
         
         # Obtenir la taille du fichier
         file_size_gb = os.path.getsize(downloaded_path) / (1024**3)
@@ -263,29 +285,30 @@ def main():
             print()
         
         # Liste de modèles GGUF quantifiés
+        # Note: Les dépôts communautaires peuvent avoir des noms de fichiers différents
         gguf_models = {
             "1": {
                 "name": "Qwen2.5-7B-Instruct Q4_K_M",
-                "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-                "filename": "qwen2.5-7b-instruct-q4_k_m.gguf",
+                "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+                "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
                 "description": "Qwen2.5 7B Instruct Q4_K_M - ~4.5 GB - ⭐ RECOMMANDÉ - Excellente qualité, optimisé pour 8GB VRAM"
             },
             "2": {
                 "name": "Mistral-7B-Instruct-v0.2 Q4_K_M",
-                "repo_id": "mistralai/Mistral-7B-Instruct-v0.2-GGUF",
-                "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+                "repo_id": "bartowski/Mistral-7B-Instruct-v0.2-GGUF",
+                "filename": "Mistral-7B-Instruct-v0.2-Q4_K_M.gguf",
                 "description": "Mistral 7B Instruct v0.2 Q4_K_M - ~4.5 GB - Modèle performant, optimisé pour 8GB VRAM"
             },
             "3": {
                 "name": "Qwen2.5-7B-Instruct Q4_0",
-                "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-                "filename": "qwen2.5-7b-instruct-q4_0.gguf",
+                "repo_id": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+                "filename": "Qwen2.5-7B-Instruct-Q4_0.gguf",
                 "description": "Qwen2.5 7B Instruct Q4_0 - ~4.0 GB - Version plus petite (qualité légèrement inférieure)"
             },
             "4": {
                 "name": "Mistral-7B-Instruct-v0.2 Q4_0",
-                "repo_id": "mistralai/Mistral-7B-Instruct-v0.2-GGUF",
-                "filename": "mistral-7b-instruct-v0.2.Q4_0.gguf",
+                "repo_id": "bartowski/Mistral-7B-Instruct-v0.2-GGUF",
+                "filename": "Mistral-7B-Instruct-v0.2-Q4_0.gguf",
                 "description": "Mistral 7B Instruct v0.2 Q4_0 - ~4.0 GB - Version plus petite"
             },
         }
