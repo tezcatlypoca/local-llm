@@ -337,3 +337,46 @@ def list_models():
     except Exception as e:
         logger.error(f"Erreur lors de la récupération de la liste des modèles: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@models_bp.route('/models/gguf', methods=['GET'])
+def list_gguf_models():
+    """
+    Liste tous les modèles GGUF disponibles avec leurs chemins.
+    """
+    try:
+        models = _scan_huggingface_models()
+        local_models = _scan_local_models_directory()
+        all_models = models + local_models
+        
+        gguf_models = []
+        for model in all_models:
+            if model.get("model_format") == "gguf" or model.get("gguf_files"):
+                gguf_info = {
+                    "identifier": model.get("identifier"),
+                    "path": model.get("path"),
+                    "gguf_files": model.get("gguf_files", []),
+                    "recommended_gguf_file": model.get("recommended_gguf_file"),
+                    "size_mb": model.get("size_mb", 0)
+                }
+                
+                # Ajouter le chemin complet du fichier recommandé
+                if gguf_info["recommended_gguf_file"] and gguf_info["path"]:
+                    from pathlib import Path
+                    model_dir = Path(gguf_info["path"])
+                    if model_dir.exists():
+                        full_path = model_dir / gguf_info["recommended_gguf_file"]
+                        if full_path.exists():
+                            gguf_info["recommended_gguf_file_path"] = str(full_path)
+                
+                gguf_models.append(gguf_info)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(gguf_models),
+            "gguf_models": gguf_models
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des modèles GGUF: {e}", exc_info=True)
+        return jsonify({"status": "error", "message": str(e)}), 500

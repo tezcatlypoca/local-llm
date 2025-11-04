@@ -101,6 +101,20 @@ def _is_gguf_model(model_name: str) -> bool:
     path = Path(model_name)
     if path.exists() and path.suffix.lower() == '.gguf':
         return True
+    # Vérifier si c'est un identifiant qui correspond à un modèle GGUF dans le cache
+    # (chercher dans les modèles listés par GET /models)
+    try:
+        from routes.models import _scan_huggingface_models
+        models = _scan_huggingface_models()
+        for model in models:
+            if model.get("identifier") == model_name:
+                if model.get("model_format") == "gguf":
+                    return True
+                # Si le modèle a des fichiers GGUF, c'est un modèle GGUF
+                if model.get("gguf_files"):
+                    return True
+    except Exception:
+        pass
     return False
 
 
@@ -130,18 +144,37 @@ def load_model(model_name: str):
             else:
                 # Chercher dans le cache Hugging Face
                 cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+                model_path = None
+                model_exists = False
+                
                 if cache_dir.exists():
-                    # Chercher récursivement
-                    model_path = None
-                    model_exists = False
+                    # Méthode 1: Chercher directement le fichier .gguf
                     for gguf_file in cache_dir.rglob("*.gguf"):
                         if model_name.replace("/", "--") in str(gguf_file) or model_name in str(gguf_file) or any(part in str(gguf_file) for part in model_name.split("/")):
                             model_path = str(gguf_file)
                             model_exists = True
+                            logger.info(f"Fichier GGUF trouvé: {model_path}")
                             break
-                else:
-                    model_exists = False
-                    model_path = None
+                    
+                    # Méthode 2: Si pas trouvé, chercher via GET /models
+                    if not model_exists:
+                        try:
+                            from routes.models import _scan_huggingface_models
+                            models = _scan_huggingface_models()
+                            for model in models:
+                                if model.get("identifier") == model_name or model.get("identifier", "").replace("/", "--") == model_name.replace("/", "--"):
+                                    if model.get("model_format") == "gguf" and model.get("recommended_gguf_file"):
+                                        # Construire le chemin complet
+                                        model_dir = Path(model.get("path", ""))
+                                        if model_dir.exists():
+                                            gguf_file_path = model_dir / model.get("recommended_gguf_file")
+                                            if gguf_file_path.exists():
+                                                model_path = str(gguf_file_path)
+                                                model_exists = True
+                                                logger.info(f"Fichier GGUF trouvé via scan: {model_path}")
+                                                break
+                        except Exception as e:
+                            logger.debug(f"Erreur lors de la recherche via scan: {e}")
         else:
             model_exists, model_path = _check_model_exists(model_name)
         
