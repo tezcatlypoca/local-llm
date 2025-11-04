@@ -12,6 +12,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from llm_manager_instance import get_llm_manager
+from llm_gguf_manager_instance import get_gguf_manager
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +161,27 @@ def chat(gpu_id: int):
                 'message': 'max_new_tokens ne peut pas dépasser 4096.'
             }), 400
         
-        # Vérifier que le gestionnaire a un modèle chargé sur ce GPU
-        manager = get_llm_manager()
-        gpu_status = manager.get_model_status(gpu_id=gpu_id)
+        # Détecter le type de modèle chargé (transformers ou GGUF)
+        transformers_manager = get_llm_manager()
+        gguf_manager = get_gguf_manager()
+        
+        transformers_status = transformers_manager.get_model_status(gpu_id=gpu_id)
+        gguf_status = gguf_manager.get_model_status(gpu_id=gpu_id)
+        
+        # Utiliser le gestionnaire qui a un modèle chargé
+        if transformers_status.get("model_loaded", False):
+            manager = transformers_manager
+            gpu_status = transformers_status
+            model_type = "transformers"
+        elif gguf_status.get("model_loaded", False):
+            manager = gguf_manager
+            gpu_status = gguf_status
+            model_type = "gguf"
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
+            }), 404
         
         if "error" in gpu_status:
             return jsonify({
@@ -170,31 +189,38 @@ def chat(gpu_id: int):
                 'message': gpu_status["error"]
             }), 400
         
-        if not gpu_status.get("gpu_available", False):
+        if model_type == "transformers" and not gpu_status.get("gpu_available", False):
             return jsonify({
                 'status': 'error',
                 'message': f'GPU {gpu_id} n\'est pas disponible.'
             }), 404
         
-        if not gpu_status.get("model_loaded", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
-            }), 404
-        
         model_name = gpu_status.get("model_name", "unknown")
         
         # Générer la réponse (message passé tel quel, sans formatage)
-        logger.info(f"Génération de réponse sur GPU {gpu_id} avec modèle {model_name}...")
-        response = manager.generate(
-            prompt=message_text,
-            gpu_id=gpu_id,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            top_p=0.9,
-            repetition_penalty=1.2
-        )
+        logger.info(f"Génération de réponse sur GPU {gpu_id} avec modèle {model_name} (type: {model_type})...")
+        
+        if model_type == "gguf":
+            # Pour GGUF, pas de do_sample, utiliser les paramètres directement
+            response = manager.generate(
+                prompt=message_text,
+                gpu_id=gpu_id,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
+                top_p=0.9,
+                repetition_penalty=1.2
+            )
+        else:
+            # Pour transformers, utiliser do_sample
+            response = manager.generate(
+                prompt=message_text,
+                gpu_id=gpu_id,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                top_p=0.9,
+                repetition_penalty=1.2
+            )
         
         if response is None:
             return jsonify({
@@ -323,9 +349,27 @@ def completion(gpu_id: int):
                 'message': 'max_new_tokens ne peut pas dépasser 4096.'
             }), 400
         
-        # Vérifier que le gestionnaire a un modèle chargé sur ce GPU
-        manager = get_llm_manager()
-        gpu_status = manager.get_model_status(gpu_id=gpu_id)
+        # Détecter le type de modèle chargé (transformers ou GGUF)
+        transformers_manager = get_llm_manager()
+        gguf_manager = get_gguf_manager()
+        
+        transformers_status = transformers_manager.get_model_status(gpu_id=gpu_id)
+        gguf_status = gguf_manager.get_model_status(gpu_id=gpu_id)
+        
+        # Utiliser le gestionnaire qui a un modèle chargé
+        if transformers_status.get("model_loaded", False):
+            manager = transformers_manager
+            gpu_status = transformers_status
+            model_type = "transformers"
+        elif gguf_status.get("model_loaded", False):
+            manager = gguf_manager
+            gpu_status = gguf_status
+            model_type = "gguf"
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
+            }), 404
         
         if "error" in gpu_status:
             return jsonify({
@@ -333,30 +377,36 @@ def completion(gpu_id: int):
                 'message': gpu_status["error"]
             }), 400
         
-        if not gpu_status.get("gpu_available", False):
+        if model_type == "transformers" and not gpu_status.get("gpu_available", False):
             return jsonify({
                 'status': 'error',
                 'message': f'GPU {gpu_id} n\'est pas disponible.'
             }), 404
         
-        if not gpu_status.get("model_loaded", False):
-            return jsonify({
-                'status': 'error',
-                'message': f'Aucun modèle n\'est chargé sur le GPU {gpu_id}. Chargez un modèle avec POST /models/load/{{model_name}} d\'abord.'
-            }), 404
-        
         model_name = gpu_status.get("model_name", "unknown")
         
         # Générer la réponse
-        logger.info(f"Génération de completion sur GPU {gpu_id} avec modèle {model_name}...")
-        response = manager.generate(
-            prompt=prompt.strip(),
-            gpu_id=gpu_id,
-            temperature=temperature,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            top_p=0.9
-        )
+        logger.info(f"Génération de completion sur GPU {gpu_id} avec modèle {model_name} (type: {model_type})...")
+        
+        if model_type == "gguf":
+            # Pour GGUF, pas de do_sample
+            response = manager.generate(
+                prompt=prompt.strip(),
+                gpu_id=gpu_id,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
+                top_p=0.9
+            )
+        else:
+            # Pour transformers, utiliser do_sample
+            response = manager.generate(
+                prompt=prompt.strip(),
+                gpu_id=gpu_id,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                top_p=0.9
+            )
         
         if response is None:
             return jsonify({

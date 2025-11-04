@@ -14,9 +14,11 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from llm_manager_instance import get_llm_manager
+from llm_gguf_manager_instance import get_gguf_manager
 
 if TYPE_CHECKING:
     from llm_manager import LLMManager
+    from llm_gguf_manager import LLMGGUFManager
 
 logger = logging.getLogger(__name__)
 
@@ -69,39 +71,87 @@ def _check_model_exists(model_name: str) -> tuple[bool, str]:
         return False, None
 
 
-def _find_free_gpu(manager) -> int:
+def _find_free_gpu(manager, is_gguf: bool = False) -> int:
     """Trouve un GPU libre pour charger un modèle. Préfère GPU 1 (évite le GPU d'affichage)."""
     status = manager.get_model_status()
 
     # Chercher d'abord GPU 1, puis GPU 0 (priorité au GPU 1 pour éviter le GPU d'affichage)
     for gpu_id in [1, 0]:
-        gpu_info = status["gpus"].get(gpu_id, {})
-        if gpu_info.get("gpu_available", False) and not gpu_info.get("model_loaded", False):
-            return gpu_id
+        if is_gguf:
+            # Pour GGUF, vérifier directement dans le statut
+            if not status.get("gpus", {}).get(gpu_id, {}).get("model_loaded", False):
+                return gpu_id
+        else:
+            # Pour transformers, vérifier gpu_available ET model_loaded
+            gpu_info = status.get("gpus", {}).get(gpu_id, {})
+            if gpu_info.get("gpu_available", False) and not gpu_info.get("model_loaded", False):
+                return gpu_id
 
     return -1
 
 
+def _is_gguf_model(model_name: str) -> bool:
+    """Détecte si un modèle est au format GGUF."""
+    model_name_lower = model_name.lower()
+    return '.gguf' in model_name_lower or 'gguf' in model_name_lower
+
+
 @model_management_bp.route('/models/load/<path:model_name>', methods=['POST'])
 def load_model(model_name: str):
-    """Charge un modèle sur un GPU libre."""
+    """Charge un modèle sur un GPU libre (transformers ou GGUF)."""
     try:
-        manager = get_llm_manager()
+        # Détecter le type de modèle
+        is_gguf = _is_gguf_model(model_name)
+        
+        # Utiliser le bon gestionnaire
+        if is_gguf:
+            manager = get_gguf_manager()
+            logger.info(f"Modèle GGUF détecté: {model_name}")
+        else:
+            manager = get_llm_manager()
+            logger.info(f"Modèle transformers détecté: {model_name}")
 
-        # Vérifier que le modèle existe
-        model_exists, model_path = _check_model_exists(model_name)
+        # Vérifier que le modèle existe (pour GGUF, vérifier le fichier)
+        if is_gguf:
+            # Pour GGUF, model_name peut être un chemin de fichier ou un nom de modèle
+            from pathlib import Path
+            model_path_obj = Path(model_name)
+            if model_path_obj.exists() and model_path_obj.suffix == '.gguf':
+                model_exists = True
+                model_path = model_name
+            else:
+                # Chercher dans le cache Hugging Face
+                cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+                if cache_dir.exists():
+                    # Chercher récursivement
+                    model_path = None
+                    model_exists = False
+                    for gguf_file in cache_dir.rglob("*.gguf"):
+                        if model_name.replace("/", "--") in str(gguf_file) or model_name in str(gguf_file) or any(part in str(gguf_file) for part in model_name.split("/")):
+                            model_path = str(gguf_file)
+                            model_exists = True
+                            break
+                else:
+                    model_exists = False
+                    model_path = None
+        else:
+            model_exists, model_path = _check_model_exists(model_name)
+        
         if not model_exists:
             return jsonify({
                 'status': 'error',
-                'message': f'Le modèle "{model_name}" n\'existe pas localement ou sur Hugging Face Hub.'
+                'message': f'Le modèle "{model_name}" n\'existe pas localement ou n\'a pas été trouvé.'
             }), 404
 
-        gpu_id = _find_free_gpu(manager)
+        gpu_id = _find_free_gpu(manager, is_gguf=is_gguf)
         if gpu_id == -1:
             status = manager.get_model_status()
             loaded_models = []
             for gid in [0, 1]:
-                gpu_info = status["gpus"].get(gid, {})
+                if is_gguf:
+                    gpu_info = status.get("gpus", {}).get(gid, {})
+                else:
+                    gpu_info = status["gpus"].get(gid, {})
                 if gpu_info.get("model_loaded", False):
                     loaded_models.append(f"GPU {gid}: {gpu_info.get('model_name', 'unknown')}")
 
@@ -111,26 +161,27 @@ def load_model(model_name: str):
                 'loaded_models': loaded_models
             }), 503
 
-        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        # Récupérer les données JSON
         try:
             request_data = request.get_json(force=True, silent=True) or {}
         except Exception:
             request_data = {}
         model_kwargs = request_data.get('model_kwargs', {})
+        
+        # Pour GGUF, tokenizer_name peut être fourni
+        tokenizer_name = request_data.get('tokenizer_name', None)
 
-        # Vérifier si c'est un modèle GGUF (incompatible avec transformers)
-        model_name_lower = model_name.lower()
-        if '.gguf' in model_name_lower or 'gguf' in model_name_lower:
-            return jsonify({
-                'status': 'error',
-                'message': f'Le modèle "{model_name}" est au format GGUF, incompatible avec cette API.',
-                'details': 'Les modèles GGUF nécessitent llama.cpp ou d\'autres loaders spécialisés. Cette API utilise transformers (PyTorch) qui nécessite des modèles aux formats .bin, .safetensors, ou .pt.',
-                'compatible_formats': ['.bin', '.safetensors', '.pt', '.pth'],
-                'suggestion': f'Utilisez l\'identifier du modèle depuis GET /models/. Les modèles compatibles ont "model.safetensors" ou "model.bin" dans leurs fichiers. Par exemple: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" ou "gpt2"'
-            }), 400
-
-        logger.info(f"Chargement du modèle '{model_name}' sur GPU {gpu_id}...")
-        success, access_token = manager.load_model(model_name, gpu_id=gpu_id, **model_kwargs)
+        logger.info(f"Chargement du modèle '{model_name}' (type: {'GGUF' if is_gguf else 'transformers'}) sur GPU {gpu_id}...")
+        
+        if is_gguf:
+            success, access_token = manager.load_model(
+                model_path, 
+                gpu_id=gpu_id, 
+                tokenizer_name=tokenizer_name,
+                **model_kwargs
+            )
+        else:
+            success, access_token = manager.load_model(model_name, gpu_id=gpu_id, **model_kwargs)
 
         if success:
             gpu_status = manager.get_model_status(gpu_id=gpu_id)
@@ -142,22 +193,35 @@ def load_model(model_name: str):
                 'gpu_identifier': f'GPU-{gpu_id}',
                 'model_name': model_name,
                 'model_path': model_path,
+                'model_type': 'gguf' if is_gguf else 'transformers',
                 'access_token': access_token,
                 'note': 'Conservez ce token pour décharger le modèle plus tard',
                 'gpu_status': gpu_status
             }), 200
         else:
             # Améliorer le message d'erreur avec plus de détails
-            return jsonify({
-                'status': 'error',
-                'message': f'Erreur lors du chargement du modèle "{model_name}" sur GPU {gpu_id}',
-                'details': 'Vérifiez les logs du serveur pour plus d\'informations.',
-                'tips': [
+            tips = []
+            if is_gguf:
+                tips = [
+                    'Vérifiez que le fichier .gguf existe et est accessible',
+                    'Assurez-vous que llama-cpp-python est installé: pip install llama-cpp-python',
+                    'Pour ROCm/AMD, installez avec: CMAKE_ARGS="-DLLAMA_HIPBLAS=on" pip install llama-cpp-python',
+                    'Vérifiez que vous avez suffisamment de mémoire GPU disponible'
+                ]
+            else:
+                tips = [
                     'Utilisez l\'identifier exact du modèle depuis GET /models/',
-                    'Assurez-vous que le modèle est compatible avec transformers (format .bin, .safetensors, pas .gguf)',
+                    'Assurez-vous que le modèle est compatible avec transformers (format .bin, .safetensors)',
                     'Vérifiez que vous avez suffisamment de mémoire GPU disponible',
                     'Pour les modèles Llama, assurez-vous d\'avoir les bons tokens spéciaux configurés'
                 ]
+            
+            return jsonify({
+                'status': 'error',
+                'message': f'Erreur lors du chargement du modèle "{model_name}" sur GPU {gpu_id}',
+                'model_type': 'gguf' if is_gguf else 'transformers',
+                'details': 'Vérifiez les logs du serveur pour plus d\'informations.',
+                'tips': tips
             }), 500
 
     except Exception as e:
@@ -170,17 +234,15 @@ def load_model(model_name: str):
 
 @model_management_bp.route('/models/unload/<int:gpu_id>', methods=['POST'])
 def unload_model(gpu_id: int):
-    """Décharge un modèle d'un GPU spécifique."""
+    """Décharge un modèle d'un GPU spécifique (transformers ou GGUF)."""
     try:
-        manager = get_llm_manager()
-
         if gpu_id not in [0, 1]:
             return jsonify({
                 'status': 'error',
                 'message': f'GPU ID invalide: {gpu_id}. Doit être 0 ou 1.'
             }), 400
 
-        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        # Récupérer les données JSON
         try:
             request_data = request.get_json(force=True, silent=True) or {}
         except Exception:
@@ -193,7 +255,27 @@ def unload_model(gpu_id: int):
                 'message': "Token d'accès requis. Fournissez le token reçu lors du chargement du modèle (access_token)."
             }), 400
 
-        logger.info(f"Tentative de déchargement du GPU {gpu_id}...")
+        # Détecter le type de modèle en vérifiant les deux gestionnaires
+        transformers_manager = get_llm_manager()
+        gguf_manager = get_gguf_manager()
+        
+        transformers_status = transformers_manager.get_model_status(gpu_id=gpu_id)
+        gguf_status = gguf_manager.get_model_status(gpu_id=gpu_id)
+        
+        # Utiliser le gestionnaire qui a un modèle chargé
+        if transformers_status.get("model_loaded", False):
+            manager = transformers_manager
+            model_type = "transformers"
+        elif gguf_status.get("model_loaded", False):
+            manager = gguf_manager
+            model_type = "gguf"
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Aucun modèle chargé sur GPU {gpu_id}.'
+            }), 404
+
+        logger.info(f"Tentative de déchargement du GPU {gpu_id} (type: {model_type})...")
         success, message = manager.unload_model(gpu_id, access_token=access_token)
 
         if success:
@@ -226,11 +308,9 @@ def unload_model(gpu_id: int):
 
 @model_management_bp.route('/models/unload_all', methods=['POST'])
 def unload_all_models():
-    """Décharge tous les modèles de tous les GPUs. Requiert un mot de passe administrateur."""
+    """Décharge tous les modèles de tous les GPUs (transformers et GGUF). Requiert un mot de passe administrateur."""
     try:
-        manager = get_llm_manager()
-
-        # Récupérer les données JSON (force=True permet d'accepter même sans Content-Type)
+        # Récupérer les données JSON
         try:
             request_data = request.get_json(force=True, silent=True) or {}
         except Exception:
@@ -245,7 +325,45 @@ def unload_all_models():
             }), 400
 
         logger.info(f"Tentative de déchargement forcé de tous les GPUs...")
-        results = manager.unload_all_models(admin_password=admin_password)
+        
+        # Décharger depuis les deux gestionnaires
+        transformers_manager = get_llm_manager()
+        gguf_manager = get_gguf_manager()
+        
+        transformers_results = transformers_manager.unload_all_models(admin_password=admin_password)
+        
+        # Pour GGUF, on doit décharger manuellement car il n'y a pas de unload_all_models
+        gguf_results = {"gpu_0": {"success": False, "message": ""}, "gpu_1": {"success": False, "message": ""}}
+        for gpu_id in [0, 1]:
+            gguf_status = gguf_manager.get_model_status(gpu_id=gpu_id)
+            if gguf_status.get("model_loaded", False):
+                # Pas de force unload pour GGUF, on essaie juste de nettoyer
+                try:
+                    gguf_manager.models[gpu_id] = None
+                    gguf_manager.tokenizers[gpu_id] = None
+                    gguf_manager.model_paths[gpu_id] = None
+                    gguf_manager.model_names[gpu_id] = None
+                    gguf_manager.tokenizer_names[gpu_id] = None
+                    gguf_manager.access_tokens[gpu_id] = None
+                    import gc
+                    gc.collect()
+                    gguf_results[f"gpu_{gpu_id}"] = {"success": True, "message": f"Modèle GGUF déchargé du GPU {gpu_id}"}
+                except Exception as e:
+                    gguf_results[f"gpu_{gpu_id}"] = {"success": False, "message": f"Erreur: {str(e)}"}
+            else:
+                gguf_results[f"gpu_{gpu_id}"] = {"success": True, "message": f"Aucun modèle GGUF chargé sur GPU {gpu_id}"}
+        
+        # Combiner les résultats
+        results = {
+            "gpu_0": {
+                "success": transformers_results["gpu_0"]["success"] or gguf_results["gpu_0"]["success"],
+                "message": f"Transformers: {transformers_results['gpu_0']['message']}. GGUF: {gguf_results['gpu_0']['message']}"
+            },
+            "gpu_1": {
+                "success": transformers_results["gpu_1"]["success"] or gguf_results["gpu_1"]["success"],
+                "message": f"Transformers: {transformers_results['gpu_1']['message']}. GGUF: {gguf_results['gpu_1']['message']}"
+            }
+        }
 
         # Vérifier si le mot de passe était invalide (vérifier dans les deux GPUs au cas où)
         invalid_password_msg = "Mot de passe administrateur invalide"

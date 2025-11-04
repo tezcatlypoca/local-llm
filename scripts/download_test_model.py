@@ -22,6 +22,12 @@ except ImportError:
     print("   Installez les dépendances avec: pip install -r requirements.txt")
     sys.exit(1)
 
+try:
+    from huggingface_hub import hf_hub_download
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+
 # Essayer d'importer BitsAndBytes pour la quantisation (optionnel)
 # Note: BitsAndBytes n'est PAS compatible avec ROCm/AMD, seulement CUDA/NVIDIA
 BITSANDBYTES_AVAILABLE = False
@@ -151,6 +157,80 @@ def download_model(model_name: str = "gpt2", use_quantization: bool = False):
         return False
 
 
+def download_gguf_model(repo_id: str, filename: str, local_dir: str = None) -> bool:
+    """
+    Télécharge un modèle quantifié GGUF depuis Hugging Face.
+    
+    Args:
+        repo_id: ID du dépôt Hugging Face (ex: "Qwen/Qwen2.5-7B-Instruct-GGUF")
+        filename: Nom du fichier GGUF à télécharger (ex: "qwen2.5-7b-instruct-q4_k_m.gguf")
+        local_dir: Répertoire local où sauvegarder le modèle (défaut: ~/.cache/huggingface/hub/models)
+    
+    Returns:
+        True si le téléchargement a réussi, False sinon
+    """
+    if not HF_HUB_AVAILABLE:
+        print("❌ Erreur: huggingface_hub n'est pas installé.")
+        print("   Installez-le avec: pip install huggingface_hub")
+        return False
+    
+    print(f"📥 Téléchargement du modèle GGUF quantifié...")
+    print(f"   Dépôt: {repo_id}")
+    print(f"   Fichier: {filename}")
+    print(f"   (Ceci peut prendre quelques minutes selon votre connexion)\n")
+    
+    try:
+        # Définir le répertoire de destination
+        if local_dir is None:
+            # Utiliser le cache Hugging Face par défaut
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            local_dir = os.path.join(cache_dir, repo_id.replace("/", "--"))
+            os.makedirs(local_dir, exist_ok=True)
+        else:
+            os.makedirs(local_dir, exist_ok=True)
+        
+        # Télécharger le fichier GGUF
+        print(f"1/1 Téléchargement du fichier GGUF...")
+        downloaded_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=local_dir,
+            local_dir_use_symlinks=False
+        )
+        
+        # Obtenir la taille du fichier
+        file_size_gb = os.path.getsize(downloaded_path) / (1024**3)
+        
+        print(f"   ✅ Modèle téléchargé avec succès !")
+        print(f"   Chemin: {downloaded_path}")
+        print(f"   Taille: {file_size_gb:.2f} GB")
+        print(f"\n💡 Ce modèle est au format GGUF et nécessite llama.cpp pour être utilisé.")
+        print(f"   Il n'est pas compatible avec l'API actuelle basée sur transformers.")
+        print(f"   Pour utiliser ce modèle, vous devrez intégrer llama.cpp dans votre projet.")
+        
+        return True
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"\n❌ Erreur lors du téléchargement: {error_msg}")
+        
+        # Détecter les erreurs courantes
+        if "404" in error_msg or "not found" in error_msg.lower():
+            print("\n⚠️  Le fichier ou le dépôt semble introuvable.")
+            print("   Vérifiez que:")
+            print(f"   - Le dépôt '{repo_id}' existe sur Hugging Face")
+            print(f"   - Le fichier '{filename}' existe dans ce dépôt")
+            print(f"   - Visitez: https://huggingface.co/{repo_id}")
+        
+        print("\n💡 Vérifiez également:")
+        print("   - Votre connexion internet")
+        print("   - Que huggingface_hub est correctement installé")
+        print("   - Que vous avez suffisamment d'espace disque")
+        print("   - Si c'est un modèle privé, connectez-vous avec: huggingface-cli login")
+        
+        return False
+
+
 def main():
     """Point d'entrée principal."""
     print("=" * 60)
@@ -158,11 +238,111 @@ def main():
     print("=" * 60)
     print()
     
+    # Menu principal : choisir entre modèles transformers ou modèles GGUF quantifiés
+    print("Quel type de modèle souhaitez-vous télécharger ?")
+    print()
+    print("  1. Modèles standard (transformers) - Compatibles avec l'API actuelle")
+    print("  2. Modèles quantifiés GGUF - Nécessitent llama.cpp (recommandé pour Q4)")
+    print()
+    
+    model_type = input("Choisissez une option (1 ou 2) [défaut: 1]: ").strip() or "1"
+    
+    # Si l'utilisateur choisit les modèles GGUF quantifiés
+    if model_type == "2":
+        print("\n" + "=" * 60)
+        print("📦 Téléchargement de modèles quantifiés GGUF")
+        print("=" * 60)
+        print()
+        print("ℹ️  Les modèles GGUF sont pré-quantifiés et optimisés.")
+        print("   Avantages: Téléchargement 3x plus rapide, compatible CPU/GPU, meilleure performance.")
+        print("   Note: Ces modèles nécessitent llama.cpp pour être utilisés (pas encore intégré dans l'API).\n")
+        
+        # Informer l'utilisateur si ROCm est détecté
+        if IS_ROCM:
+            print("ℹ️  ROCm détecté: Les modèles GGUF sont parfaitement compatibles avec AMD/ROCm !")
+            print()
+        
+        # Liste de modèles GGUF quantifiés
+        gguf_models = {
+            "1": {
+                "name": "Qwen2.5-7B-Instruct Q4_K_M",
+                "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                "filename": "qwen2.5-7b-instruct-q4_k_m.gguf",
+                "description": "Qwen2.5 7B Instruct Q4_K_M - ~4.5 GB - ⭐ RECOMMANDÉ - Excellente qualité, optimisé pour 8GB VRAM"
+            },
+            "2": {
+                "name": "Mistral-7B-Instruct-v0.2 Q4_K_M",
+                "repo_id": "mistralai/Mistral-7B-Instruct-v0.2-GGUF",
+                "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+                "description": "Mistral 7B Instruct v0.2 Q4_K_M - ~4.5 GB - Modèle performant, optimisé pour 8GB VRAM"
+            },
+            "3": {
+                "name": "Qwen2.5-7B-Instruct Q4_0",
+                "repo_id": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+                "filename": "qwen2.5-7b-instruct-q4_0.gguf",
+                "description": "Qwen2.5 7B Instruct Q4_0 - ~4.0 GB - Version plus petite (qualité légèrement inférieure)"
+            },
+            "4": {
+                "name": "Mistral-7B-Instruct-v0.2 Q4_0",
+                "repo_id": "mistralai/Mistral-7B-Instruct-v0.2-GGUF",
+                "filename": "mistral-7b-instruct-v0.2.Q4_0.gguf",
+                "description": "Mistral 7B Instruct v0.2 Q4_0 - ~4.0 GB - Version plus petite"
+            },
+        }
+        
+        print("Modèles GGUF quantifiés disponibles:")
+        print()
+        for key, model_info in gguf_models.items():
+            print(f"  {key}. {model_info['description']}")
+        print()
+        
+        choice = input("Choisissez un modèle (1-4) ou entrez un nom personnalisé (format: repo_id/filename.gguf): ").strip()
+        
+        if choice in gguf_models:
+            model_info = gguf_models[choice]
+            repo_id = model_info["repo_id"]
+            filename = model_info["filename"]
+        elif choice:
+            # Format personnalisé : "repo_id/filename.gguf"
+            if "/" in choice and choice.endswith(".gguf"):
+                parts = choice.rsplit("/", 1)
+                if len(parts) == 2:
+                    repo_id = parts[0]
+                    filename = parts[1]
+                else:
+                    print("❌ Format invalide. Utilisez: repo_id/filename.gguf")
+                    sys.exit(1)
+            else:
+                print("❌ Format invalide. Utilisez: repo_id/filename.gguf")
+                sys.exit(1)
+        else:
+            print("❌ Aucun choix valide.")
+            sys.exit(1)
+        
+        print()
+        success = download_gguf_model(repo_id, filename)
+        
+        if success:
+            print("\n✅ Téléchargement terminé !")
+            print("\n⚠️  IMPORTANT: Ce modèle est au format GGUF.")
+            print("   Pour l'utiliser, vous devrez intégrer llama.cpp dans votre projet.")
+            print("   L'API actuelle basée sur transformers ne peut pas charger ce format.")
+            sys.exit(0)
+        else:
+            print("\n❌ Échec du téléchargement.")
+            sys.exit(1)
+    
+    # Section originale pour les modèles transformers
+    print("\n" + "=" * 60)
+    print("📦 Téléchargement de modèles standard (transformers)")
+    print("=" * 60)
+    print()
+    
     # Informer l'utilisateur si ROCm est détecté
     if IS_ROCM:
         print("ℹ️  ROCm détecté: bitsandbytes n'est pas compatible avec AMD/ROCm")
         print("   La quantisation 4-bit via bitsandbytes sera désactivée.")
-        print("   Pour ROCm, considérez d'utiliser des modèles pré-quantifiés (GPTQ/AWQ).\n")
+        print("   Pour ROCm, considérez d'utiliser des modèles pré-quantifiés GGUF (option 2).\n")
     
     # Liste de modèles recommandés (du plus petit au plus grand)
     models = {
@@ -173,7 +353,6 @@ def main():
         "5": ("Qwen/Qwen2.5-3B-Instruct", "Qwen2.5 3B - ~6 GB - Plus performant (limite 8GB)", False),
         "6": ("microsoft/phi-2", "Phi-2 - ~5.4 GB - Modèle Microsoft performant (attention: limite 8GB)", False),
         "7": ("Qwen/Qwen2.5-7B-Instruct", "Qwen2.5 7B - ~14 GB (4-5 GB quantifié) - ⭐ PROCHAIN GPT-4 - Meilleure qualité", True),
-        "8": ("ProsusAI/finbert", "FinBERT - ~0.44 GB - Modèle financier (classification, pas génératif)", False),
     }
     
     print("Modèles disponibles pour téléchargement:")
@@ -183,7 +362,7 @@ def main():
         print(f"  {key}. {description}{quant_note}")
     print()
     
-    choice = input("Choisissez un modèle (1-8) ou entrez un nom de modèle Hugging Face: ").strip()
+    choice = input("Choisissez un modèle (1-7) ou entrez un nom de modèle Hugging Face: ").strip()
     
     use_quantization = False
     if choice in models:
@@ -197,7 +376,7 @@ def main():
             else:
                 if IS_ROCM:
                     print(f"   ⚠️  BitsAndBytes n'est pas compatible avec ROCm/AMD.")
-                    print(f"   ℹ️  Pour ROCm, utilisez des modèles pré-quantifiés (GPTQ/AWQ) ou téléchargez en full precision.")
+                    print(f"   ℹ️  Pour ROCm, utilisez plutôt des modèles GGUF pré-quantifiés (option 2 du menu principal).")
                     print(f"   📥 Téléchargement en full precision (nécessitera plus de 8 GB)...")
                 else:
                     print(f"   ⚠️  BitsAndBytes n'est pas installé. Installation: pip install bitsandbytes")
@@ -213,7 +392,8 @@ def main():
                 use_quantization = quant_choice != 'n'
             elif IS_ROCM:
                 print(f"   ℹ️  BitsAndBytes n'est pas compatible avec ROCm/AMD.")
-                print(f"   Téléchargement en full precision (nécessitera plus de 8 GB)...")
+                print(f"   💡 Utilisez plutôt des modèles GGUF pré-quantifiés (option 2 du menu principal).")
+                print(f"   📥 Téléchargement en full precision (nécessitera plus de 8 GB)...")
     else:
         # Par défaut : Qwen2.5-1.5B-Instruct (recommandé pour 8GB)
         print("Utilisation du modèle par défaut recommandé: Qwen/Qwen2.5-1.5B-Instruct")
