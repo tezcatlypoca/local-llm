@@ -26,6 +26,213 @@ def _get_huggingface_cache_dir():
     return cache_dir
 
 
+def _scan_all_gguf_files():
+    """
+    Scanne récursivement le cache Hugging Face pour trouver TOUS les fichiers .gguf.
+    Retourne une liste de modèles avec identifiants uniques.
+    """
+    gguf_models = []
+    cache_dir = Path(_get_huggingface_cache_dir())
+    
+    if not cache_dir.exists():
+        logger.warning(f"Cache Hugging Face introuvable: {cache_dir}")
+        return gguf_models
+    
+    # Dictionnaire pour regrouper les fichiers GGUF par modèle (basé sur le chemin)
+    models_dict = {}
+    
+    try:
+        # Scanner récursivement tous les fichiers .gguf
+        for gguf_file in cache_dir.rglob("*.gguf"):
+            try:
+                full_path = str(gguf_file.absolute())
+                file_name = gguf_file.name
+                file_size = gguf_file.stat().st_size
+                
+                # Essayer d'extraire un identifiant depuis le chemin
+                # Format typique: ~/.cache/huggingface/hub/models--org--model-name/snapshots/...
+                parts = gguf_file.parts
+                model_identifier = None
+                
+                # Chercher un répertoire qui commence par "models--"
+                for i, part in enumerate(parts):
+                    if part.startswith("models--"):
+                        # Extraire org/model-name depuis "models--org--model-name"
+                        model_part = part.replace("models--", "")
+                        if "--" in model_part:
+                            org, model_name = model_part.split("--", 1)
+                            model_identifier = f"{org}/{model_name}"
+                        break
+                
+                # Si pas d'identifiant trouvé, créer un identifiant basé sur le chemin
+                if not model_identifier:
+                    # Prendre le répertoire parent du fichier comme identifiant
+                    parent_dir = gguf_file.parent.name
+                    if parent_dir.startswith("models--"):
+                        model_identifier = parent_dir.replace("models--", "").replace("--", "/")
+                    else:
+                        # Créer un identifiant basé sur le chemin relatif
+                        rel_path = gguf_file.relative_to(cache_dir)
+                        # Prendre les 2-3 premiers niveaux du chemin
+                        path_parts = rel_path.parts[:3]
+                        model_identifier = "/".join(path_parts).replace("--", "/")
+                
+                # Créer un identifiant unique pour ce fichier spécifique
+                # Format: model_identifier/filename (sans extension)
+                file_base = file_name.replace(".gguf", "")
+                unique_id = f"{model_identifier}/{file_base}"
+                
+                # Regrouper les fichiers par modèle
+                if model_identifier not in models_dict:
+                    models_dict[model_identifier] = {
+                        "identifier": model_identifier,
+                        "gguf_files": [],
+                        "paths": {}
+                    }
+                
+                models_dict[model_identifier]["gguf_files"].append({
+                    "file": file_name,
+                    "unique_id": unique_id,
+                    "path": full_path,
+                    "size_mb": round(file_size / (1024 * 1024), 2)
+                })
+                models_dict[model_identifier]["paths"][file_name] = full_path
+                
+            except Exception as e:
+                logger.debug(f"Erreur lors du traitement de {gguf_file}: {e}")
+                continue
+        
+        # Convertir en liste et déterminer le fichier recommandé
+        for model_id, model_data in models_dict.items():
+            gguf_files = model_data["gguf_files"]
+            
+            # Trier par taille et priorité de quantification
+            def sort_key(f):
+                priority = 999
+                name_lower = f["file"].lower()
+                if 'q4_k_m' in name_lower:
+                    priority = 1
+                elif 'q4_0' in name_lower or 'q4' in name_lower:
+                    priority = 2
+                elif 'q5_k_m' in name_lower:
+                    priority = 3
+                elif 'q5_0' in name_lower or 'q5' in name_lower:
+                    priority = 4
+                elif 'q8_0' in name_lower:
+                    priority = 5
+                return (priority, f["file"])
+            
+            gguf_files.sort(key=sort_key)
+            
+            # Fichier recommandé (le premier après tri)
+            recommended = gguf_files[0] if gguf_files else None
+            
+            # Créer l'entrée du modèle
+            model_info = {
+                "identifier": model_id,
+                "unique_identifiers": [f["unique_id"] for f in gguf_files],
+                "gguf_files": [f["file"] for f in gguf_files],
+                "recommended_gguf_file": recommended["file"] if recommended else None,
+                "recommended_gguf_file_path": recommended["path"] if recommended else None,
+                "recommended_gguf_unique_id": recommended["unique_id"] if recommended else None,
+                "path": os.path.dirname(recommended["path"]) if recommended else None,
+                "size_mb": sum(f["size_mb"] for f in gguf_files),
+                "model_format": "gguf",
+                "files_detail": gguf_files  # Détails complets pour chaque fichier
+            }
+            
+            gguf_models.append(model_info)
+        
+        logger.info(f"Scan GGUF: {len(gguf_models)} modèle(s) trouvé(s) avec {sum(len(m['gguf_files']) for m in gguf_models)} fichier(s) .gguf")
+        
+    except Exception as e:
+        logger.error(f"Erreur lors du scan des fichiers GGUF: {e}", exc_info=True)
+    
+    return gguf_models
+
+
+def _resolve_gguf_identifier(identifier: str):
+    """
+    Résout un identifiant de modèle GGUF vers le chemin complet du fichier.
+    
+    Args:
+        identifier: Identifiant du modèle (peut être l'identifier, unique_id, ou un chemin)
+    
+    Returns:
+        (success: bool, file_path: str or None, error_message: str or None)
+    """
+    try:
+        # Si c'est déjà un chemin qui existe, le retourner directement
+        path_obj = Path(identifier)
+        if path_obj.exists() and path_obj.suffix == '.gguf':
+            return True, str(path_obj.absolute()), None
+        
+        # Scanner tous les modèles GGUF
+        gguf_models = _scan_all_gguf_files()
+        
+        # Chercher par identifier, unique_id, ou nom de fichier
+        for model in gguf_models:
+            # Vérifier l'identifier principal
+            if model.get("identifier") == identifier:
+                recommended_path = model.get("recommended_gguf_file_path")
+                if recommended_path and Path(recommended_path).exists():
+                    return True, recommended_path, None
+            
+            # Vérifier les unique_identifiers
+            unique_ids = model.get("unique_identifiers", [])
+            if identifier in unique_ids:
+                # Trouver le fichier correspondant
+                files_detail = model.get("files_detail", [])
+                for f in files_detail:
+                    if f.get("unique_id") == identifier:
+                        file_path = f.get("path")
+                        if file_path and Path(file_path).exists():
+                            return True, file_path, None
+            
+            # Vérifier par nom de fichier (sans extension)
+            files_detail = model.get("files_detail", [])
+            for f in files_detail:
+                file_name = f.get("file", "")
+                file_base = file_name.replace(".gguf", "")
+                if identifier == file_base or identifier in file_name:
+                    file_path = f.get("path")
+                    if file_path and Path(file_path).exists():
+                        return True, file_path, None
+        
+        # Chercher aussi dans les modèles scannés par l'ancienne méthode
+        models = _scan_huggingface_models()
+        for model in models:
+            if model.get("model_format") == "gguf":
+                if model.get("identifier") == identifier:
+                    recommended_path = model.get("recommended_gguf_file_path")
+                    if recommended_path and Path(recommended_path).exists():
+                        return True, recommended_path, None
+                
+                # Chercher dans les fichiers GGUF du modèle
+                gguf_files = model.get("gguf_files", [])
+                for gguf_file in gguf_files:
+                    if identifier in gguf_file or identifier.replace(".gguf", "") == gguf_file.replace(".gguf", ""):
+                        model_dir = Path(model.get("path", ""))
+                        if model_dir.exists():
+                            full_path = model_dir / gguf_file
+                            if full_path.exists():
+                                return True, str(full_path), None
+        
+        # Dernière tentative: chercher récursivement dans le cache
+        cache_dir = Path(_get_huggingface_cache_dir())
+        if cache_dir.exists():
+            # Chercher par nom de fichier
+            for gguf_file in cache_dir.rglob(f"*{identifier}*.gguf"):
+                if gguf_file.exists():
+                    return True, str(gguf_file.absolute()), None
+        
+        return False, None, f"Identifiant '{identifier}' non trouvé dans les modèles GGUF disponibles"
+    
+    except Exception as e:
+        logger.error(f"Erreur lors de la résolution de l'identifiant '{identifier}': {e}", exc_info=True)
+        return False, None, f"Erreur lors de la résolution: {str(e)}"
+
+
 def _calculate_directory_size(directory):
     """Calcule la taille totale d'un répertoire en octets."""
     total_size = 0
@@ -492,38 +699,65 @@ def list_models():
 def list_gguf_models():
     """
     Liste tous les modèles GGUF disponibles avec leurs chemins.
+    Utilise un scan récursif pour trouver TOUS les fichiers .gguf dans le cache.
     """
     try:
+        # Scanner tous les fichiers GGUF récursivement
+        gguf_models = _scan_all_gguf_files()
+        
+        # Aussi scanner via la méthode standard pour complémentarité
         models = _scan_huggingface_models()
         local_models = _scan_local_models_directory()
         all_models = models + local_models
         
-        gguf_models = []
+        # Ajouter les modèles trouvés par l'ancienne méthode qui ne sont pas déjà dans la liste
+        existing_identifiers = {m.get("identifier") for m in gguf_models}
+        
         for model in all_models:
             if model.get("model_format") == "gguf" or model.get("gguf_files"):
-                gguf_info = {
-                    "identifier": model.get("identifier"),
-                    "path": model.get("path"),
-                    "gguf_files": model.get("gguf_files", []),
-                    "recommended_gguf_file": model.get("recommended_gguf_file"),
-                    "size_mb": model.get("size_mb", 0)
-                }
-                
-                # Ajouter le chemin complet du fichier recommandé
-                if gguf_info["recommended_gguf_file"] and gguf_info["path"]:
-                    from pathlib import Path
-                    model_dir = Path(gguf_info["path"])
-                    if model_dir.exists():
-                        full_path = model_dir / gguf_info["recommended_gguf_file"]
-                        if full_path.exists():
-                            gguf_info["recommended_gguf_file_path"] = str(full_path)
-                
-                gguf_models.append(gguf_info)
+                model_id = model.get("identifier")
+                if model_id and model_id not in existing_identifiers:
+                    gguf_info = {
+                        "identifier": model_id,
+                        "path": model.get("path"),
+                        "gguf_files": model.get("gguf_files", []),
+                        "recommended_gguf_file": model.get("recommended_gguf_file"),
+                        "size_mb": model.get("size_mb", 0),
+                        "model_format": "gguf"
+                    }
+                    
+                    # Ajouter le chemin complet du fichier recommandé
+                    if gguf_info["recommended_gguf_file"] and gguf_info["path"]:
+                        model_dir = Path(gguf_info["path"])
+                        if model_dir.exists():
+                            full_path = model_dir / gguf_info["recommended_gguf_file"]
+                            if full_path.exists():
+                                gguf_info["recommended_gguf_file_path"] = str(full_path)
+                    
+                    gguf_models.append(gguf_info)
+                    existing_identifiers.add(model_id)
+        
+        # Créer une liste simplifiée pour l'affichage
+        simplified_models = []
+        for model in gguf_models:
+            simplified = {
+                "identifier": model.get("identifier"),
+                "recommended_unique_id": model.get("recommended_gguf_unique_id") or model.get("identifier"),
+                "recommended_gguf_file": model.get("recommended_gguf_file"),
+                "recommended_gguf_file_path": model.get("recommended_gguf_file_path"),
+                "gguf_files": model.get("gguf_files", []),
+                "unique_identifiers": model.get("unique_identifiers", []),
+                "size_mb": model.get("size_mb", 0),
+                "path": model.get("path")
+            }
+            simplified_models.append(simplified)
         
         return jsonify({
             "status": "success",
             "count": len(gguf_models),
-            "gguf_models": gguf_models
+            "cache_dir": str(_get_huggingface_cache_dir()),
+            "gguf_models": simplified_models,
+            "note": "Utilisez 'identifier' ou 'recommended_unique_id' pour charger un modèle avec POST /models/load/<identifier>"
         }), 200
         
     except Exception as e:

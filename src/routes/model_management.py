@@ -134,54 +134,30 @@ def load_model(model_name: str):
             logger.info(f"Modèle transformers détecté: {model_name}")
 
         # Vérifier que le modèle existe (pour GGUF, vérifier le fichier)
+        error_msg = None
         if is_gguf:
-            # Pour GGUF, model_name peut être un chemin de fichier ou un nom de modèle
-            from pathlib import Path
-            model_path_obj = Path(model_name)
-            if model_path_obj.exists() and model_path_obj.suffix == '.gguf':
-                model_exists = True
-                model_path = model_name
-            else:
-                # Chercher dans le cache Hugging Face
-                cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-                model_path = None
+            # Utiliser la fonction de résolution d'identifiant
+            try:
+                from routes.models import _resolve_gguf_identifier
+                model_exists, model_path, error_msg = _resolve_gguf_identifier(model_name)
+                if not model_exists:
+                    logger.warning(f"Résolution GGUF échouée pour '{model_name}': {error_msg}")
+            except Exception as e:
+                logger.error(f"Erreur lors de la résolution de l'identifiant GGUF: {e}", exc_info=True)
                 model_exists = False
-                
-                if cache_dir.exists():
-                    # Méthode 1: Chercher directement le fichier .gguf
-                    for gguf_file in cache_dir.rglob("*.gguf"):
-                        if model_name.replace("/", "--") in str(gguf_file) or model_name in str(gguf_file) or any(part in str(gguf_file) for part in model_name.split("/")):
-                            model_path = str(gguf_file)
-                            model_exists = True
-                            logger.info(f"Fichier GGUF trouvé: {model_path}")
-                            break
-                    
-                    # Méthode 2: Si pas trouvé, chercher via GET /models
-                    if not model_exists:
-                        try:
-                            from routes.models import _scan_huggingface_models
-                            models = _scan_huggingface_models()
-                            for model in models:
-                                if model.get("identifier") == model_name or model.get("identifier", "").replace("/", "--") == model_name.replace("/", "--"):
-                                    if model.get("model_format") == "gguf" and model.get("recommended_gguf_file"):
-                                        # Construire le chemin complet
-                                        model_dir = Path(model.get("path", ""))
-                                        if model_dir.exists():
-                                            gguf_file_path = model_dir / model.get("recommended_gguf_file")
-                                            if gguf_file_path.exists():
-                                                model_path = str(gguf_file_path)
-                                                model_exists = True
-                                                logger.info(f"Fichier GGUF trouvé via scan: {model_path}")
-                                                break
-                        except Exception as e:
-                            logger.debug(f"Erreur lors de la recherche via scan: {e}")
+                model_path = None
+                error_msg = str(e)
         else:
             model_exists, model_path = _check_model_exists(model_name)
         
         if not model_exists:
+            error_message = f'Le modèle "{model_name}" n\'existe pas localement ou n\'a pas été trouvé.'
+            if is_gguf and error_msg:
+                error_message += f" ({error_msg})"
+                error_message += " Utilisez GET /models/gguf pour voir la liste des modèles disponibles avec leurs identifiants."
             return jsonify({
                 'status': 'error',
-                'message': f'Le modèle "{model_name}" n\'existe pas localement ou n\'a pas été trouvé.'
+                'message': error_message
             }), 404
 
         gpu_id = _find_free_gpu(manager, is_gguf=is_gguf)
