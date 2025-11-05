@@ -51,7 +51,7 @@ def test_models_endpoint(client: LLMClient):
         return False
 
 
-def test_load_chat_unload_cycle(client: LLMClient, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0", gpu_id: int = 0):
+def test_load_chat_unload_cycle(client: LLMClient, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0", gpu_id: int = 1):
     """
     Test du cycle complet: charger un modèle, envoyer un message, décharger le modèle.
     
@@ -164,9 +164,9 @@ def test_health_endpoint(client: LLMClient):
         print(f"   ✅ GPUs libres: {summary.get('gpus_free', 0)}")
         print(f"   ✅ GPUs utilisés: {summary.get('gpus_with_models', 0)}")
         
-        # Health check GPU 0
-        print("\n2. Health check GPU 0:")
-        gpu_health = client.health.check_gpu_health(0)
+        # Health check GPU 1
+        print("\n2. Health check GPU 1:")
+        gpu_health = client.health.check_gpu_health(1)
         print(f"   ✅ Status: {gpu_health.get('status')}")
         print(f"   ✅ Disponible: {gpu_health.get('available', False)}")
         
@@ -186,7 +186,7 @@ def test_chat_endpoint(client: LLMClient):
     """
     Test de l'endpoint chat (si un modèle est déjà chargé).
     
-    Note: Ce test nécessite qu'un modèle soit déjà chargé sur GPU 0.
+    Note: Ce test nécessite qu'un modèle soit déjà chargé sur GPU 1.
     Pour un test complet du cycle, utilisez test_load_chat_unload_cycle().
     """
     print("\n" + "="*60)
@@ -195,16 +195,16 @@ def test_chat_endpoint(client: LLMClient):
     
     try:
         # Vérifier qu'un modèle est chargé
-        health = client.health.check_gpu_health(0)
+        health = client.health.check_gpu_health(1)
         if not health.get('model', {}).get('loaded'):
-            print("   ⚠️  Aucun modèle chargé sur GPU 0. Test ignoré.")
+            print("   ⚠️  Aucun modèle chargé sur GPU 1. Test ignoré.")
             print("   💡 Utilisez test_load_chat_unload_cycle() pour un test complet")
             return True
         
         # Envoyer un message
         print("\n1. Envoi d'un message (format string):")
         response = client.chat.send_message(
-            gpu_id=0,
+            gpu_id=1,
             message="Bonjour, comment allez-vous?",
             temperature=0.7,
             max_new_tokens=50
@@ -226,15 +226,15 @@ def test_completion_endpoint(client: LLMClient):
     
     try:
         # Vérifier qu'un modèle est chargé
-        health = client.health.check_gpu_health(0)
+        health = client.health.check_gpu_health(1)
         if not health.get('model', {}).get('loaded'):
-            print("   ⚠️  Aucun modèle chargé sur GPU 0. Test ignoré.")
+            print("   ⚠️  Aucun modèle chargé sur GPU 1. Test ignoré.")
             return True
         
         # Générer une completion
         print("\n1. Génération d'une completion:")
         response = client.completion.complete(
-            gpu_id=0,
+            gpu_id=1,
             prompt="Le machine learning est une branche de",
             temperature=0.7,
             max_new_tokens=50
