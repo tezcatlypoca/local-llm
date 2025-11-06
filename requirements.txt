@@ -1,0 +1,46 @@
+# Framework web
+Flask==3.0.0
+flask-cors==6.0.1
+python-dotenv==1.2.1
+
+# PyTorch et dépendances (compatibles avec ROCm 5.7)
+# NOTE: PyTorch avec ROCm doit être installé depuis les wheels ROCm, pas depuis PyPI standard
+# Pour ROCm 5.7, installer PyTorch depuis: https://pytorch.org/get-started/previous-versions/
+# Exemple pour Ubuntu avec ROCm 5.7:
+# pip install torch==2.2.0 torchvision==0.17.0 torchaudio==2.2.0 --index-url https://download.pytorch.org/whl/rocm5.7
+torch==2.2.0
+torchvision==0.17.0
+torchaudio==2.2.0
+numpy==1.26.4
+
+# Transformers et modèles LLM
+transformers==4.40.0
+sentence-transformers==2.7.0
+accelerate==0.30.0
+tokenizers==0.19.1
+safetensors==0.4.3
+
+# Base de données vectorielle pour RAG
+chromadb==0.5.0
+faiss-cpu==1.8.0.post1  # Pour CPU, faiss-gpu pour GPU (si nécessaire)
+
+# Parsing de documents
+pypdf==4.3.1
+python-docx==1.1.2
+markdown==3.6
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# Utilitaires pour RAG
+langchain==0.3.0
+langchain-community==0.3.0
+tiktoken==0.8.0
+tqdm==4.66.5
+
+# Gestion des embeddings et text splitting
+unstructured==0.15.0
+
+# Utilitaires généraux
+requests==2.32.5
+python-multipart==0.0.9
+
