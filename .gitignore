@@ -2,5 +2,6 @@
 /venv/
 /env_v2/
 .cursor/
+.env
 doc/
 __pycache__/

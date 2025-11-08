@@ -162,10 +162,25 @@ def _resolve_gguf_identifier(identifier: str):
         (success: bool, file_path: str or None, error_message: str or None)
     """
     try:
+        # Normaliser le chemin si nécessaire
+        # Si le chemin ressemble à un chemin absolu Linux sans slash initial,
+        # ajouter le slash initial (ex: "home/user/..." -> "/home/user/...")
+        normalized_identifier = identifier
+        if not identifier.startswith('/') and not identifier.startswith('http'):
+            # Vérifier si c'est un chemin qui devrait être absolu
+            # (commence par des répertoires système Linux typiques)
+            linux_system_dirs = ['home/', 'usr/', 'var/', 'opt/', 'tmp/', 'root/', 'etc/']
+            if any(identifier.startswith(dir_name) for dir_name in linux_system_dirs):
+                normalized_identifier = '/' + identifier
+                logger.info(f"Normalisation du chemin GGUF: '{identifier}' -> '{normalized_identifier}'")
+        
         # Si c'est déjà un chemin qui existe, le retourner directement
-        path_obj = Path(identifier)
+        path_obj = Path(normalized_identifier)
         if path_obj.exists() and path_obj.suffix == '.gguf':
             return True, str(path_obj.absolute()), None
+        
+        # Utiliser l'identifiant normalisé pour les recherches suivantes
+        identifier = normalized_identifier
         
         # Scanner tous les modèles GGUF
         gguf_models = _scan_all_gguf_files()
