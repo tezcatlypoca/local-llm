@@ -1,39 +1,35 @@
-"""
-API Flask surcouche pour les briques API.
-Cette API fait des appels proxy vers l'API de base existante.
-"""
 from flask import Flask, jsonify
-from flask_cors import CORS
-from src.routes.base import (
-    root_bp,
-    models_bp,
-    health_bp,
-    chat_bp,
-    completion_bp,
-    logs_bp
-)
-from src.routes.conversations import bp as conversations_bp
+from clients.base_api_client import BaseApiClient
 
 app = Flask(__name__)
+base_api_client = BaseApiClient()
 
-# Activer CORS pour permettre les appels depuis différents domaines
-CORS(app)
-
-# Enregistrer les blueprints sans préfixe pour transparence avec l'API de base
-app.register_blueprint(root_bp)
-app.register_blueprint(models_bp)
-app.register_blueprint(health_bp)
-app.register_blueprint(chat_bp)
-app.register_blueprint(completion_bp)
-app.register_blueprint(logs_bp)
-
-# Routes spécifiques à la surcouche (conversations)
-app.register_blueprint(conversations_bp)
-
-
-# La route root est gérée par le blueprint root_bp
-
+@app.route('/', methods=['GET'])
+def root():
+    base_api_response = base_api_client.root()
+    is_base_api_connected = base_api_response is not None
+    
+    if is_base_api_connected:
+        base_api_status = 200
+        base_api_message = 'Base API connected'
+    else:
+        base_api_status = 503
+        base_api_message = 'Base API not connected'
+    
+    return jsonify(
+        {
+            'base-api': 
+            {
+                'message': base_api_message,
+                'status': base_api_status
+            },
+            'overlay-api': 
+                {
+                    'message': 'Overlay API ON',
+                    'status': 200
+                }
+        }
+    )
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8000)
-
+    app.run(debug=True, host='0.0.0.0', port=5000)
