@@ -260,6 +260,105 @@ def load_model(model_name: str):
         }), 500
 
 
+@model_management_bp.route('/models/load_multi_gpu/<path:model_name>', methods=['POST'])
+def load_model_multi_gpu(model_name: str):
+    """
+    Charge un modèle sur plusieurs GPU (expérimental).
+    
+    ⚠️ AVERTISSEMENT : Pour des modèles <8Go, le multi-GPU peut RÉDUIRE les performances
+    à cause de la communication inter-GPU. Utilisez uniquement si :
+    - Le modèle est trop grand pour un seul GPU
+    - Vous testez expérimentalement
+    
+    Cette route n'est disponible que pour les modèles transformers (pas GGUF).
+    """
+    try:
+        # Vérifier que ce n'est pas un modèle GGUF
+        is_gguf = _is_gguf_model(model_name)
+        if is_gguf:
+            return jsonify({
+                'status': 'error',
+                'message': 'Le chargement multi-GPU n\'est pas supporté pour les modèles GGUF. Utilisez /models/load/ pour charger un modèle GGUF sur un seul GPU.'
+            }), 400
+        
+        manager = get_llm_manager()
+        
+        # Vérifier que le modèle existe
+        model_exists, model_path = _check_model_exists(model_name)
+        if not model_exists:
+            return jsonify({
+                'status': 'error',
+                'message': f'Le modèle "{model_name}" n\'existe pas localement ou n\'a pas été trouvé.'
+            }), 404
+        
+        # Vérifier qu'on a au moins 2 GPU
+        if manager.num_gpus < 2:
+            return jsonify({
+                'status': 'error',
+                'message': f'Au moins 2 GPU sont requis pour le multi-GPU. GPU disponibles: {manager.num_gpus}'
+            }), 400
+        
+        # Récupérer les données JSON
+        try:
+            request_data = request.get_json(force=True, silent=True) or {}
+        except Exception:
+            request_data = {}
+        model_kwargs = request_data.get('model_kwargs', {})
+        use_both_gpus = request_data.get('use_both_gpus', True)
+        
+        logger.info(f"Chargement multi-GPU du modèle '{model_name}' (transformers)...")
+        
+        try:
+            success, access_token, warning = manager.load_model_multi_gpu(
+                model_name, 
+                use_both_gpus=use_both_gpus,
+                **model_kwargs
+            )
+        except Exception as e:
+            logger.error(f"Erreur lors du chargement multi-GPU du modèle: {e}", exc_info=True)
+            return jsonify({
+                'status': 'error',
+                'message': f'Erreur lors du chargement: {str(e)}',
+                'model_type': 'transformers'
+            }), 500
+        
+        if success:
+            gpu_status = manager.get_model_status()
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'Modèle "{model_name}" chargé avec succès en mode multi-GPU',
+                'gpu_ids': [0, 1],
+                'model_name': model_name,
+                'model_path': model_path,
+                'model_type': 'transformers',
+                'access_token': access_token,
+                'note': 'Conservez ce token pour décharger le modèle plus tard. Utilisez l\'inférence sur GPU 0.',
+                'warning': warning,
+                'gpu_status': gpu_status,
+                'performance_note': '⚠️ Pour des modèles <8Go, les performances peuvent être légèrement inférieures à un chargement sur un seul GPU.'
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': warning or f'Erreur lors du chargement multi-GPU du modèle "{model_name}"',
+                'model_type': 'transformers',
+                'details': 'Vérifiez les logs du serveur pour plus d\'informations.',
+                'tips': [
+                    'Assurez-vous que les deux GPU sont libres (déchargez les modèles existants)',
+                    'Vérifiez que vous avez suffisamment de mémoire GPU disponible sur les deux GPU',
+                    'Pour des modèles <8Go, considérez utiliser /models/load/ sur un seul GPU pour de meilleures performances'
+                ]
+            }), 500
+    
+    except Exception as e:
+        logger.error(f"Erreur lors du chargement multi-GPU: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Erreur serveur: {str(e)}'
+        }), 500
+
+
 @model_management_bp.route('/models/unload/<int:gpu_id>', methods=['POST'])
 def unload_model(gpu_id: int):
     """Décharge un modèle d'un GPU spécifique (transformers ou GGUF)."""
