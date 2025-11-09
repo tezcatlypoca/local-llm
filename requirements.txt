@@ -1,0 +1,15 @@
+# Bibliothèques pour créer une API
+Flask==3.0.0
+flask-cors>=4.0.0
+
+# Bibliothèque pour requêter des APIs existantes
+requests>=2.31.0
+
+# Utilitaires JSON (généralement inclus avec Python mais utile pour la compatibilité)
+# python-dotenv pour gérer les variables d'environnement
+python-dotenv>=1.0.0
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Transformers pour les tokenizers
+transformers>=4.30.0

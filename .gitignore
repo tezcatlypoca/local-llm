@@ -1,4 +1,8 @@
-*.ini
-.env
 __pycache__/
 env_v2/
+my_env/
+
+*.ini
+.env
+.ssh
+.cursor
