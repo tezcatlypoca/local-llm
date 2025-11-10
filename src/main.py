@@ -26,7 +26,7 @@ app.register_blueprint(rag_bp)
 try:
     # Configuration depuis les variables d'environnement ou valeurs par défaut
     rag_collection_name = os.getenv('RAG_COLLECTION_NAME', 'rag_collection')
-    rag_persist_dir = os.getenv('RAG_PERSIST_DIR', './rag_db')
+    rag_persist_dir = os.getenv('RAG_PERSIST_DIR', './data/rag_db')
     rag_embedding_model = os.getenv('RAG_EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
     rag_chunk_size = int(os.getenv('RAG_CHUNK_SIZE', '1000'))
     rag_chunk_overlap = int(os.getenv('RAG_CHUNK_OVERLAP', '200'))
@@ -80,5 +80,5 @@ def internal_error(error):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
 
