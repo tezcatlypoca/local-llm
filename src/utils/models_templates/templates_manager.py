@@ -7,6 +7,12 @@ class TemplatesManager:
     Gestionnaire des templates de formatage pour les différents modèles.
     """
     
+    # Dictionnaire des templates disponibles
+    _templates = {
+        'mistral': format_mistral_messages,
+        'qwen': format_qwen_messages,
+    }
+    
     @classmethod
     def get_template(cls, model_name: str) -> Callable[[List[Dict[str, str]]], str]:
         """
@@ -22,7 +28,7 @@ class TemplatesManager:
             ValueError: Si le modèle n'est pas supporté.
         """
         # Normaliser le nom du modèle (enlever les extensions, versions, etc.)
-        normalized_name = TemplatesManager._normalize_model_name(model_name)
+        normalized_name = cls._normalize_model_name(model_name)
         
         if normalized_name not in cls._templates:
             raise ValueError(

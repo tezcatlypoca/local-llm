@@ -1,8 +1,14 @@
 __pycache__/
 env_v2/
 my_env/
-
+.pytest_cache/
 *.ini
 .env
 .ssh
-.cursor
+.cursor/
+
+# Base de données SQLite3
+data/
+*.db
+*.sqlite
+*.sqlite3

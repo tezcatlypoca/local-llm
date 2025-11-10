@@ -74,7 +74,7 @@ class ContextManager:
         
         # Cache invalide ou inexistant, reformater
         # Tronquer les messages bruts AVANT de formater (plus efficace)
-        truncated_messages = self._truncate_messages_if_needed(
+        truncated_messages = self.truncate_messages_if_needed(
             conversation.message,
             conversation.model_name
         )
@@ -167,85 +167,110 @@ class ContextManager:
             word_count = len(text.split())
             return word_count * 2
     
-    def _truncate_if_needed(
-        self, 
-        formatted_context: str, 
-        model_name: str,
-        messages: List[MessageModel]
-    ) -> str:
+    def _count_messages_tokens(self, messages: List[MessageModel], model_name: str) -> int:
         """
-        Tronque le contexte si il dépasse la limite de tokens.
-        Stratégie : Garde les messages les plus récents (les plus importants).
+        Compte le nombre de tokens dans une liste de messages bruts.
+        Concatène le contenu de tous les messages pour le comptage.
         
         Args:
-            formatted_context: Contexte formaté
+            messages: Liste des messages bruts
             model_name: Nom du modèle
-            messages: Liste des messages (pour troncature intelligente)
         
         Returns:
-            Contexte tronqué si nécessaire
+            Nombre de tokens total
         """
-        token_count = self.count_tokens(formatted_context, model_name)
+        # Concaténer le contenu de tous les messages
+        combined_content = "\n".join([msg.content for msg in messages])
+        return self.count_tokens(combined_content, model_name)
+    
+    def truncate_messages_if_needed(
+        self, 
+        messages: List[MessageModel],
+        model_name: str
+    ) -> List[MessageModel]:
+        """
+        Tronque les messages bruts si ils dépassent la limite de tokens.
+        Vérifie les tokens des messages bruts AVANT formatage.
+        Stratégie : Garde les messages les plus récents (les plus importants).
+        IMPORTANT : Le message système (s'il existe) est TOUJOURS conservé.
+        
+        Args:
+            messages: Liste des messages bruts
+            model_name: Nom du modèle
+        
+        Returns:
+            Liste de messages tronqués si nécessaire
+        """
+        if not messages:
+            return messages
+        
+        # Séparer le message système (s'il existe) des autres messages
+        system_message = None
+        other_messages = []
+        
+        for msg in messages:
+            if msg.role == Role.SYSTEM:
+                system_message = msg
+            else:
+                other_messages.append(msg)
+        
+        # Vérifier les tokens des messages (système + autres)
+        all_messages = ([system_message] if system_message else []) + other_messages
+        token_count = self._count_messages_tokens(all_messages, model_name)
         
         if token_count <= self.max_context_length_tokens:
-            return formatted_context
+            return all_messages
         
         logger.warning(
-            f"Contexte trop long ({token_count} tokens > {self.max_context_length_tokens}). "
+            f"Messages trop longs ({token_count} tokens > {self.max_context_length_tokens}). "
             f"Troncature nécessaire."
         )
         
-        # Stratégie de troncature : garder les messages les plus récents
+        # Stratégie de troncature : garder le message système + les messages les plus récents
         # On garde au minimum le dernier message user et le dernier assistant
         # Puis on ajoute progressivement les messages précédents jusqu'à la limite
         
-        # Trier les messages par ordre chronologique (déjà dans l'ordre normalement)
-        # On va retirer les messages les plus anciens
-        
-        # Calculer combien de messages on peut garder
+        # Calculer combien de messages on peut garder (sans le système)
         # On commence par garder les 2 derniers messages (user + assistant)
         min_messages_to_keep = 2
         
-        for num_messages in range(min_messages_to_keep, len(messages) + 1):
-            # Prendre les N derniers messages
-            recent_messages = messages[-num_messages:]
+        for num_messages in range(min_messages_to_keep, len(other_messages) + 1):
+            # Prendre les N derniers messages (sans le système)
+            recent_messages = other_messages[-num_messages:]
             
-            # Reformater uniquement ces messages
-            messages_dict = MessageModel.messages_to_dict(recent_messages)
-            truncated_context = TemplatesManager.format_messages(model_name, messages_dict)
+            # Reconstruire avec le message système en premier
+            truncated_all = ([system_message] if system_message else []) + recent_messages
             
-            # Vérifier si ça rentre dans la limite
-            truncated_token_count = self.count_tokens(truncated_context, model_name)
+            # Vérifier les tokens
+            truncated_token_count = self._count_messages_tokens(truncated_all, model_name)
             
             if truncated_token_count <= self.max_context_length_tokens:
                 # Si on peut ajouter un message de plus, on le fait
-                if num_messages < len(messages):
+                if num_messages < len(other_messages):
                     # Essayer avec un message de plus
-                    next_messages = messages[-(num_messages + 1):]
-                    next_dict = MessageModel.messages_to_dict(next_messages)
-                    next_context = TemplatesManager.format_messages(model_name, next_dict)
-                    next_token_count = self.count_tokens(next_context, model_name)
+                    next_messages = other_messages[-(num_messages + 1):]
+                    next_all = ([system_message] if system_message else []) + next_messages
+                    next_token_count = self._count_messages_tokens(next_all, model_name)
                     
                     if next_token_count <= self.max_context_length_tokens:
                         continue  # On peut garder plus de messages
                 
                 # On a trouvé le bon nombre de messages
                 logger.info(
-                    f"Contexte tronqué : {len(messages)} messages → {num_messages} messages "
-                    f"({truncated_token_count} tokens)"
+                    f"Messages tronqués : {len(messages)} messages → {len(truncated_all)} messages "
+                    f"({truncated_token_count} tokens bruts, système conservé: {system_message is not None})"
                 )
-                return truncated_context
+                return truncated_all
         
         # Si même avec 2 messages c'est trop long, on garde quand même
         # (le dernier message user doit être envoyé)
-        # Prendre au minimum les 2 derniers messages
-        min_messages = messages[-min_messages_to_keep:]
-        min_dict = MessageModel.messages_to_dict(min_messages)
-        min_context = TemplatesManager.format_messages(model_name, min_dict)
+        # Prendre au minimum les 2 derniers messages + le système
+        min_messages = other_messages[-min_messages_to_keep:]
+        final_messages = ([system_message] if system_message else []) + min_messages
         
         logger.warning(
             f"Même avec {min_messages_to_keep} messages, le contexte dépasse la limite. "
-            f"Envoi quand même (peut échouer côté API)."
+            f"Envoi quand même (peut échouer côté API). Système conservé: {system_message is not None}"
         )
-        return min_context
+        return final_messages
 

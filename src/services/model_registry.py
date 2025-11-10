@@ -1,4 +1,4 @@
-from src.clients.base_api_client import BaseApiClient
+from src.clients.base_api.base_api_client import BaseApiClient
 from typing import List
 
 class ModelRegistry:

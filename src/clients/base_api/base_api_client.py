@@ -1,7 +1,7 @@
 import requests, os
 from typing import Optional
 
-from clients.endpoints.models import ModelEndpoints
+from src.clients.base_api.endpoints.models import ModelEndpoints
 
 
 class BaseApiClient:

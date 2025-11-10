@@ -1,5 +1,5 @@
 from dataclasses import dataclass 
-from typing import Dict, List
+from typing import Dict, List, Any
 from enum import Enum
 
 class Role(Enum):
@@ -14,6 +14,21 @@ class MessageModel:
     role: Role
     content: str
     temperature: float = 0.7
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convertit le modèle en dictionnaire pour la sérialisation JSON.
+        
+        Returns:
+            Dictionnaire représentant le message
+        """
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "role": self.role.value,
+            "content": self.content,
+            "temperature": self.temperature
+        }
 
     @classmethod
     def message_to_dict(cls, message) -> Dict[str, str]:
