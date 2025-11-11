@@ -37,6 +37,35 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class SentenceTransformerEmbeddingFunction:
+    """
+    Classe wrapper pour utiliser SentenceTransformer avec ChromaDB.
+    Compatible avec ChromaDB 0.4.16+ qui attend une signature avec 'input'.
+    """
+    
+    def __init__(self, model: SentenceTransformer):
+        """
+        Initialise la fonction d'embedding.
+        
+        Args:
+            model: Instance de SentenceTransformer
+        """
+        self.model = model
+    
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        """
+        Génère les embeddings pour une liste de textes.
+        
+        Args:
+            input: Liste de textes à encoder
+            
+        Returns:
+            Liste de listes de floats (embeddings)
+        """
+        embeddings = self.model.encode(input, convert_to_numpy=True)
+        return embeddings.tolist()
+
+
 class DocumentLoader:
     """Classe pour charger et parser différents types de documents."""
     
@@ -276,10 +305,8 @@ class RAGManager:
     
     def _init_chromadb(self):
         """Initialise la connexion à ChromaDB."""
-        # Fonction d'embedding personnalisée utilisant sentence-transformers
-        def embedding_function(texts: List[str]) -> List[List[float]]:
-            embeddings = self.embedding_model.encode(texts, convert_to_numpy=True)
-            return embeddings.tolist()
+        # Créer une fonction d'embedding compatible avec ChromaDB 0.4.16+
+        embedding_function = SentenceTransformerEmbeddingFunction(self.embedding_model)
         
         # Configuration ChromaDB
         if self.persist_directory:
