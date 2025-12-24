@@ -1,3 +1,11 @@
+"""
+Application Flask principale pour l'API Local LLM.
+Intègre :
+- Routes de gestion des conversations et messages
+- Routes de gestion des providers LLM
+- Module RAG (Retrieval-Augmented Generation)
+"""
+
 import sys
 from pathlib import Path
 import os
@@ -8,24 +16,32 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Supprimer l'avertissement de transformers concernant PyTorch/TensorFlow
-# (on n'a besoin que des tokenizers, pas des modèles complets)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+
+# Imports des clients et routes
 from src.clients.base_api.base_api_client import BaseApiClient
 from src.routes.conversations_route import conversations_bp
 from src.routes.messages_route import messages_bp
 from src.routes.providers_route import providers_bp
+from src.routes.rag import rag_bp, init_rag_manager
 
 app = Flask(__name__)
 base_api_client = BaseApiClient()
 
 # Configuration CORS
-# Permet les requêtes depuis n'importe quelle origine (à restreindre en production)
 CORS(app, resources={
     r"/*": {
         "origins": os.getenv("CORS_ORIGINS", "*").split(","),
@@ -46,6 +62,7 @@ limiter = Limiter(
 app.register_blueprint(conversations_bp)
 app.register_blueprint(messages_bp)
 app.register_blueprint(providers_bp)
+app.register_blueprint(rag_bp)
 
 # Initialiser les rate limiters dans les blueprints APRÈS l'enregistrement
 from src.routes.conversations_route import init_limiter as init_conversations_limiter
@@ -53,32 +70,79 @@ from src.routes.messages_route import init_limiter as init_messages_limiter
 init_conversations_limiter(limiter)
 init_messages_limiter(limiter)
 
+# Initialiser le RAGManager
+try:
+    # Configuration depuis les variables d'environnement ou valeurs par défaut
+    rag_collection_name = os.getenv('RAG_COLLECTION_NAME', 'rag_collection')
+    rag_persist_dir = os.getenv('RAG_PERSIST_DIR', './data/rag_db')
+    rag_embedding_model = os.getenv('RAG_EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+    rag_chunk_size = int(os.getenv('RAG_CHUNK_SIZE', '1000'))
+    rag_chunk_overlap = int(os.getenv('RAG_CHUNK_OVERLAP', '200'))
+    rag_device = os.getenv('RAG_DEVICE', None)  # None = auto
+    
+    init_rag_manager(
+        collection_name=rag_collection_name,
+        persist_directory=rag_persist_dir,
+        embedding_model=rag_embedding_model,
+        chunk_size=rag_chunk_size,
+        chunk_overlap=rag_chunk_overlap,
+        device=rag_device
+    )
+    logger.info("RAGManager initialisé avec succès")
+except Exception as e:
+    logger.error(f"Erreur lors de l'initialisation du RAGManager: {e}")
+    logger.warning("L'API fonctionnera mais les routes RAG ne seront pas disponibles")
+
+
 @app.route('/', methods=['GET'])
 def root():
+    """
+    Route root pour vérifier que l'API est active.
+    Vérifie également la connexion avec la base API.
+    
+    Returns:
+        JSON: Statut de l'API overlay et de la base API
+    """
     base_api_response = base_api_client.root()
     is_base_api_connected = base_api_response is not None
-    
+
     if is_base_api_connected:
         base_api_status = 200
         base_api_message = 'Base API connected'
     else:
         base_api_status = 503
         base_api_message = 'Base API not connected'
-    
-    return jsonify(
-        {
-            'base-api': 
-            {
-                'message': base_api_message,
-                'status': base_api_status
-            },
-            'overlay-api': 
-                {
-                    'message': 'Overlay API ON',
-                    'status': 200
-                }
+
+    return jsonify({
+        'base-api': {
+            'message': base_api_message,
+            'status': base_api_status
+        },
+        'overlay-api': {
+            'message': 'Overlay API ON',
+            'status': 200
         }
-    )
+    })
+
+
+@app.errorhandler(404)
+def not_found(error):
+    """Gestionnaire d'erreur 404."""
+    return jsonify({
+        "status": "error",
+        "message": "Route non trouvée"
+    }), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Gestionnaire d'erreur 500."""
+    logger.error(f"Erreur interne: {error}")
+    return jsonify({
+        "status": "error",
+        "message": "Erreur interne du serveur"
+    }), 500
+
 
 # Configuration Swagger/OpenAPI
 from flasgger import Swagger
@@ -99,16 +163,14 @@ swagger_config = {
 }
 
 swagger_template = {
-    "swagger": "2.0",
     "info": {
-        "title": "LLM Inference Overlay API",
-        "description": "API de surcouche pour gérer les conversations, messages, contextes et inférences LLM",
-        "version": "1.0.0",
+        "title": "Local LLM API",
+        "description": "API complète pour la gestion de LLM locaux avec système RAG",
+        "version": "3.0.0",
         "contact": {
             "name": "API Support"
         }
     },
-    "basePath": "/",
     "schemes": ["http", "https"],
     "tags": [
         {
@@ -117,16 +179,21 @@ swagger_template = {
         },
         {
             "name": "Messages",
-            "description": "Gestion des messages dans les conversations"
+            "description": "Gestion des messages"
         },
         {
             "name": "Providers",
-            "description": "Gestion des providers et modèles disponibles"
+            "description": "Gestion des providers LLM"
+        },
+        {
+            "name": "RAG",
+            "description": "Système de Retrieval-Augmented Generation"
         }
     ]
 }
 
 swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=5001, debug=True)
