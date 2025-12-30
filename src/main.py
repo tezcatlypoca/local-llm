@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 import os
 import logging
+from dotenv import load_dotenv
+
+# Charger les variables d'environnement depuis .env
+load_dotenv()
 
 # Ajouter la racine du projet au PYTHONPATH si nécessaire
 project_root = Path(__file__).parent.parent
